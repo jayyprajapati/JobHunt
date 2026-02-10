@@ -71,8 +71,16 @@ router.post('/', (req, res) => {
     'INSERT INTO recipients (campaign_id, email, name, status) VALUES (?, ?, ?, ?)' 
   );
 
+  let initialStatus = 'draft';
+  if (scheduled_at) {
+    const when = new Date(scheduled_at);
+    if (!Number.isNaN(when) && when.getTime() > Date.now()) {
+      initialStatus = 'scheduled';
+    }
+  }
+
   const tx = db.transaction(() => {
-    const result = insertCampaign.run(subject, body_html, send_mode, scheduled_at || null, 'draft');
+    const result = insertCampaign.run(subject, body_html, send_mode, scheduled_at || null, initialStatus);
     const campaignId = result.lastInsertRowid;
     for (const r of recipients) {
       insertRecipient.run(campaignId, r.email, r.name || 'There', 'pending');
@@ -81,7 +89,7 @@ router.post('/', (req, res) => {
   });
 
   const campaignId = tx();
-  return res.json({ id: campaignId, status: 'draft' });
+  return res.json({ id: campaignId, status: initialStatus });
 });
 
 router.post('/:id/preview', (req, res) => {
@@ -101,7 +109,10 @@ router.post('/:id/send', async (req, res) => {
   const campaign = fetchCampaign(id);
   if (!campaign) return res.status(404).json({ error: 'Not found' });
 
-  if (campaign.scheduled_at) {
+  const scheduledAt = campaign.scheduled_at ? new Date(campaign.scheduled_at) : null;
+  const isFuture = scheduledAt && !Number.isNaN(scheduledAt) && scheduledAt.getTime() > Date.now();
+
+  if (isFuture) {
     db.prepare("UPDATE campaigns SET status = 'scheduled' WHERE id = ?").run(id);
     return res.json({ status: 'scheduled' });
   }

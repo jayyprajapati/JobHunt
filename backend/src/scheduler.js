@@ -12,6 +12,7 @@ function startScheduler() {
 
     for (const campaign of dueCampaigns) {
       try {
+        console.log('[scheduler] sending campaign', campaign.id, 'scheduled for', campaign.scheduled_at);
         await sendCampaign(campaign.id);
       } catch (err) {
         console.error('Failed to send scheduled campaign', campaign.id, err.message);
