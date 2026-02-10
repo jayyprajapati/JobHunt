@@ -1,0 +1,22 @@
+{
+  "name": "recruiter-mailer-backend",
+  "version": "1.0.0",
+  "description": "Backend for recruiter mailer utility",
+  "main": "src/app.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "nodemon src/app.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.4.3",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "dotenv": "^16.4.5",
+    "googleapis": "^140.0.0",
+    "handlebars": "^4.7.8"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
