@@ -399,6 +399,8 @@ button.primary:disabled,
 .editor-shell {
   border-radius: 14px;
   overflow: hidden;
+  background: #ffffff;
+  color: #0f172a;
 }
 
 .editor-shell .ql-toolbar {
