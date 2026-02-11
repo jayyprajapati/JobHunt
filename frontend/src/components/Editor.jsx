@@ -27,9 +27,10 @@ export default function Editor({ subject, setSubject, body, setBody }) {
 
       <div className="editor-shell">
         <ReactQuill
-          theme="bubble"
+          theme="snow"
           value={body}
           onChange={setBody}
+          readOnly={false}
           modules={modules}
           placeholder="Write the email body"
         />
