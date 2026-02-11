@@ -1,40 +1,27 @@
 import React from 'react';
 
-export default function RecipientList({ recipients, onChange }) {
+export default function RecipientList({ recipients, onChange, onDelete }) {
   if (!recipients.length) {
     return (
-      <section className="panel empty">
-        <p className="eyebrow">Step 2</p>
-        <p className="muted">Recipients will appear here after parsing.</p>
-      </section>
+      <div className="section muted empty-line">Recipients will appear here after parsing.</div>
     );
   }
 
   return (
-    <section className="panel">
-      <div className="panel-head">
-        <div>
-          <p className="eyebrow">Step 2</p>
-          <h2>Check names</h2>
+    <div className="recipient-list">
+      {recipients.map((r, idx) => (
+        <div className="recipient-row" key={r._id || r.email}>
+          <div className="pill-text">{r.email}</div>
+          <input
+            className="input-underline"
+            value={r.name}
+            onChange={e => onChange(idx, 'name', e.target.value)}
+          />
+          <button className="icon-button" onClick={() => onDelete(idx)} title="Remove">
+            <span aria-hidden>✕</span>
+          </button>
         </div>
-        <span className="pill">{recipients.length} total</span>
-      </div>
-      <div className="recipient-grid">
-        {recipients.map((r, idx) => (
-          <div className="recipient-row" key={r.email + idx}>
-            <input
-              className="input"
-              value={r.email}
-              onChange={e => onChange(idx, 'email', e.target.value)}
-            />
-            <input
-              className="input"
-              value={r.name}
-              onChange={e => onChange(idx, 'name', e.target.value)}
-            />
-          </div>
-        ))}
-      </div>
-    </section>
+      ))}
+    </div>
   );
 }

@@ -5,6 +5,7 @@ const { getAuthUrl, handleAuthCode, isAuthenticated } = require('./gmail');
 const recipientRoutes = require('./routes/recipients');
 const { router: campaignRoutes } = require('./routes/campaigns');
 const { startScheduler } = require('./scheduler');
+const { connectMongo } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -48,8 +49,15 @@ app.get('/auth/google/callback', async (req, res) => {
 app.use('/api/recipients', recipientRoutes);
 app.use('/api/campaigns', campaignRoutes);
 
-startScheduler();
-
-app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
-});
+connectMongo()
+  .then(() => {
+    console.log('Connected to MongoDB');
+    startScheduler();
+    app.listen(PORT, () => {
+      console.log(`Server listening on port ${PORT}`);
+    });
+  })
+  .catch(err => {
+    console.error('Failed to connect to MongoDB', err.message);
+    process.exit(1);
+  });

@@ -1,34 +1,40 @@
-const path = require('path');
-const fs = require('fs');
-const Database = require('better-sqlite3');
+const mongoose = require('mongoose');
 
-const dataDir = path.join(__dirname, '..', 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
+const uri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/jobhunt';
+
+function connectMongo() {
+  return mongoose.connect(uri, {
+    autoIndex: true,
+    serverSelectionTimeoutMS: 5000,
+  });
 }
 
-const dbPath = path.join(dataDir, 'app.db');
-const db = new Database(dbPath);
-db.pragma('journal_mode = WAL');
+const recipientSchema = new mongoose.Schema({
+  email: { type: String, required: true, lowercase: true, trim: true },
+  name: { type: String, required: true, trim: true },
+  status: { type: String, enum: ['pending', 'sent', 'failed'], default: 'pending' },
+});
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS campaigns (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    subject TEXT NOT NULL,
-    body_html TEXT NOT NULL,
-    send_mode TEXT CHECK(send_mode IN ('single','individual')) NOT NULL,
-    scheduled_at TEXT,
-    status TEXT CHECK(status IN ('draft','scheduled','sent')) NOT NULL DEFAULT 'draft'
-  );
+const campaignSchema = new mongoose.Schema(
+  {
+    subject: { type: String, required: true, trim: true },
+    body_html: { type: String, required: true },
+    recipients: { type: [recipientSchema], default: [] },
+    send_mode: { type: String, enum: ['single', 'individual'], required: true },
+    scheduled_at: { type: Date, default: null },
+    status: { type: String, enum: ['draft', 'scheduled', 'sent'], default: 'draft' },
+  },
+  {
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+    versionKey: false,
+  }
+);
 
-  CREATE TABLE IF NOT EXISTS recipients (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    campaign_id INTEGER NOT NULL,
-    email TEXT NOT NULL,
-    name TEXT NOT NULL,
-    status TEXT CHECK(status IN ('pending','sent')) NOT NULL DEFAULT 'pending',
-    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
-  );
-`);
+campaignSchema.index({ status: 1, scheduled_at: 1 });
 
-module.exports = db;
+const Campaign = mongoose.model('Campaign', campaignSchema);
+
+module.exports = {
+  connectMongo,
+  Campaign,
+};

@@ -2,9 +2,40 @@ import React, { useEffect, useState } from 'react';
 import EmailInput from './components/EmailInput.jsx';
 import RecipientList from './components/RecipientList.jsx';
 import Editor from './components/Editor.jsx';
-import Preview from './components/Preview.jsx';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000';
+
+function uid() {
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    const bytes = crypto.getRandomValues(new Uint8Array(12));
+    return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  }
+  return Math.random().toString(16).slice(2).padEnd(24, '0').slice(0, 24);
+}
+
+function StatusBanner({ notice, onClose }) {
+  if (!notice) return null;
+  return (
+    <div className={`status-banner ${notice.type}`}>
+      <span>{notice.message}</span>
+      <button className="icon-button" onClick={onClose} aria-label="Close notice">×</button>
+    </div>
+  );
+}
+
+function SlidePanel({ open, title, onClose, children, width = '55vw' }) {
+  return (
+    <div className={`drawer ${open ? 'open' : ''}`} style={{ width }}>
+      <div className="drawer-header">
+        <div>
+          <p className="eyebrow">{title}</p>
+        </div>
+        <button className="icon-button" onClick={onClose} aria-label="Close panel">×</button>
+      </div>
+      <div className="drawer-body">{children}</div>
+    </div>
+  );
+}
 
 export default function App() {
   const [rawInput, setRawInput] = useState('');
@@ -12,15 +43,48 @@ export default function App() {
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
   const [sendMode, setSendMode] = useState('individual');
+  const [deliveryMode, setDeliveryMode] = useState('now');
   const [scheduledAt, setScheduledAt] = useState('');
   const [previewHtml, setPreviewHtml] = useState('');
-  const [notice, setNotice] = useState('');
+  const [previewRecipientId, setPreviewRecipientId] = useState(null);
+  const [notice, setNotice] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [isAuthed, setIsAuthed] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [draftId, setDraftId] = useState(null);
 
   useEffect(() => {
     refreshAuth();
+    loadHistory();
   }, []);
+
+  useEffect(() => {
+    if (!notice) return undefined;
+    const t = setTimeout(() => setNotice(null), 4000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  useEffect(() => {
+    if (!recipients.length) {
+      setPreviewRecipientId(null);
+      return;
+    }
+    const exists = recipients.some(r => r._id === previewRecipientId);
+    if (!exists) {
+      setPreviewRecipientId(recipients[0]._id);
+    }
+  }, [recipients, previewRecipientId]);
+
+  useEffect(() => {
+    const shouldSave = subject.trim() || body.trim() || recipients.length;
+    if (!shouldSave) return undefined;
+    const t = setTimeout(() => saveDraft(), 600);
+    return () => clearTimeout(t);
+  }, [subject, body, recipients, sendMode, deliveryMode, scheduledAt]);
 
   const refreshAuth = async () => 
     fetch(`${API_BASE}/auth/status`)
@@ -28,15 +92,26 @@ export default function App() {
       .then(data => setIsAuthed(!!data.authenticated))
       .catch(() => setIsAuthed(false));
 
+  const loadHistory = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/campaigns`);
+      const data = await res.json();
+      setHistory(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setNotice({ type: 'error', message: 'Failed to load history' });
+    }
+  };
+
   async function handleParse() {
-    setNotice('');
     const res = await fetch(`${API_BASE}/api/recipients/parse`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ rawInput }),
     });
     const data = await res.json();
-    setRecipients(data);
+    const withIds = (data || []).map(r => ({ ...r, _id: uid() }));
+    setRecipients(withIds);
+    if (withIds.length) setPreviewRecipientId(withIds[0]._id);
   }
 
   function updateRecipient(idx, field, value) {
@@ -47,63 +122,109 @@ export default function App() {
     });
   }
 
-  async function createCampaign() {
-    let scheduleIso = null;
-    if (scheduledAt) {
-      const parsed = new Date(scheduledAt);
-      if (!isNaN(parsed)) {
-        scheduleIso = parsed.toISOString();
-      }
-    }
-    const payload = {
+  function deleteRecipient(idx) {
+    setRecipients(prev => prev.filter((_, i) => i !== idx));
+  }
+
+  function buildPayload() {
+    const when = deliveryMode === 'schedule' && scheduledAt ? new Date(scheduledAt) : null;
+    return {
       subject,
       body_html: body,
       send_mode: sendMode,
       recipients,
-      scheduled_at: scheduleIso,
+      scheduled_at: when && !Number.isNaN(when) ? when.toISOString() : null,
+      status: deliveryMode === 'schedule' && when && when.getTime() > Date.now() ? 'scheduled' : 'draft',
     };
-    const res = await fetch(`${API_BASE}/api/campaigns`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || 'Failed to save campaign');
+  }
+
+  async function saveDraft(forceToast = false) {
+    const payload = buildPayload();
+    if (!payload.subject && !payload.body_html && !payload.recipients.length) return;
+    setSaving(true);
+    try {
+      let res;
+      let latestId = draftId;
+      if (draftId) {
+        res = await fetch(`${API_BASE}/api/campaigns/${draftId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      } else {
+        res = await fetch(`${API_BASE}/api/campaigns`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to save draft');
+      if (!draftId && data.id) {
+        setDraftId(data.id);
+        latestId = data.id;
+      }
+      if (forceToast) setNotice({ type: 'info', message: 'Draft saved' });
+      return latestId;
+    } catch (err) {
+      setNotice({ type: 'error', message: err.message });
+    } finally {
+      setSaving(false);
     }
-    const data = await res.json();
-    return data.id;
   }
 
   async function handlePreview() {
     setBusy(true);
-    setNotice('');
+    setNotice(null);
     try {
-      const id = await createCampaign();
-      const res = await fetch(`${API_BASE}/api/campaigns/${id}/preview`, { method: 'POST' });
+      const id = (await saveDraft()) || draftId;
+      const targetId = previewRecipientId || (recipients[0]?.id || recipients[0]?._id);
+      if (!id) throw new Error('Save a draft before previewing');
+      const res = await fetch(`${API_BASE}/api/campaigns/${id}/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipient_id: targetId }),
+      });
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Preview failed');
       setPreviewHtml(data.html || '');
-      setNotice('Preview ready');
+      setPreviewOpen(true);
+      setNotice({ type: 'info', message: 'Preview ready' });
     } catch (err) {
-      setNotice(err.message);
+      setNotice({ type: 'error', message: err.message });
     } finally {
       setBusy(false);
     }
   }
 
-  async function handleSend() {
+  async function handleSend(confirmed = false) {
+    if (recipients.length > 5 && !confirmed) {
+      setShowConfirm(true);
+      return;
+    }
     setBusy(true);
-    setNotice('');
+    setNotice(null);
     try {
-      const id = await createCampaign();
-      const res = await fetch(`${API_BASE}/api/campaigns/${id}/send`, { method: 'POST' });
+      const id = (await saveDraft()) || draftId;
+      if (!id) throw new Error('Save a draft before sending');
+      const res = await fetch(`${API_BASE}/api/campaigns/${id}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm_bulk_send: recipients.length > 5 }),
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to send');
-      setNotice(data.status === 'scheduled' ? 'Scheduled. It will go out automatically.' : 'Sent!');
+      if (data.status === 'scheduled') {
+        setNotice({ type: 'success', message: `Campaign scheduled for ${scheduledAt || 'later'}` });
+      } else {
+        setNotice({ type: 'success', message: `Email sent to ${recipients.length} recipients` });
+      }
+      await loadHistory();
     } catch (err) {
-      setNotice(err.message);
+      setNotice({ type: 'error', message: err.message });
     } finally {
       setBusy(false);
+      setShowConfirm(false);
     }
   }
 
@@ -111,54 +232,174 @@ export default function App() {
     window.location.href = `${API_BASE}/auth/google`;
   }
 
-  const disabled = !recipients.length || !subject || !body || busy;
+  async function loadCampaign(id) {
+    try {
+      const res = await fetch(`${API_BASE}/api/campaigns/${id}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load draft');
+      setSubject(data.subject || '');
+      setBody(data.body_html || '');
+      setSendMode(data.send_mode || 'individual');
+      const recs = (data.recipients || []).map(r => ({ ...r, _id: r._id || uid() }));
+      setRecipients(recs);
+      setPreviewRecipientId(recs[0]?._id || null);
+      if (data.scheduled_at) {
+        setDeliveryMode('schedule');
+        setScheduledAt(data.scheduled_at.slice(0, 16));
+      } else {
+        setDeliveryMode('now');
+        setScheduledAt('');
+      }
+      setDraftId(data.id);
+      setNotice({ type: 'info', message: 'Draft loaded' });
+      setHistoryOpen(false);
+    } catch (err) {
+      setNotice({ type: 'error', message: err.message });
+    }
+  }
+
+  const disabled = !recipients.length || !subject.trim() || !body.trim() || busy;
+  const actionLabel = deliveryMode === 'schedule' ? 'Schedule' : 'Send';
 
   return (
-    <div className="page">
-      <header className="hero">
-        <div>
-          <p className="eyebrow">Recruiter Mailer</p>
-          <h1>Personalized Gmail blasts without the spreadsheet wrangling.</h1>
-          <p className="muted">Paste addresses, fix names, write once, and fire off Gmail with {'{{name}}'} tokens.</p>
+    <div className="app-shell">
+      <div className="left-pane">
+        <div className="brand-row">
+          <div>
+            <p className="eyebrow">Recruiter Mailer</p>
+            <div className="brand">Compose and control</div>
+          </div>
+          <div className="brand-actions">
+            <button className="chip" onClick={() => setHistoryOpen(true)}>History</button>
+            <button className={`chip ${isAuthed ? 'chip-ok' : 'chip-warn'}`} onClick={connectGmail}>
+              <span className={`dot ${isAuthed ? 'ok' : 'warn'}`} />
+              {isAuthed ? 'Gmail linked' : 'Connect Gmail'}
+            </button>
+          </div>
         </div>
-        <div className="status">
-          <span className={`dot ${isAuthed ? 'ok' : 'warn'}`} />
-          {isAuthed ? 'Gmail linked' : 'Connect Gmail to send'}
-        </div>
-      </header>
 
-      <main className="grid">
-        <div className="stack">
-          <EmailInput rawInput={rawInput} onChange={setRawInput} onParse={handleParse} parsedCount={recipients.length} />
-          <RecipientList recipients={recipients} onChange={updateRecipient} />
-          <Editor
-            subject={subject}
-            setSubject={setSubject}
-            body={body}
-            setBody={setBody}
-            sendMode={sendMode}
-            setSendMode={setSendMode}
-            scheduledAt={scheduledAt}
-            setScheduledAt={setScheduledAt}
-            onConnect={connectGmail}
-            isAuthed={isAuthed}
-          />
-        </div>
-        <div className="stack">
-          <div className="panel actions">
-            <div className="buttons">
-              <button className="ghost" onClick={handlePreview} disabled={disabled}>
-                Preview
+        <div className="sections">
+          <div className="section">
+            <EmailInput rawInput={rawInput} onChange={setRawInput} onParse={handleParse} parsedCount={recipients.length} />
+            <RecipientList recipients={recipients} onChange={updateRecipient} onDelete={deleteRecipient} />
+          </div>
+
+          <div className="section">
+            <p className="section-title">Delivery</p>
+            <div className="chip-toggle">
+              <button className={`chip ${deliveryMode === 'now' ? 'active' : ''}`} onClick={() => setDeliveryMode('now')}>
+                Send now
               </button>
-              <button className="primary" onClick={handleSend} disabled={disabled}>
-                {scheduledAt ? 'Schedule' : 'Send'}
+              <button className={`chip ${deliveryMode === 'schedule' ? 'active' : ''}`} onClick={() => setDeliveryMode('schedule')}>
+                Schedule
               </button>
             </div>
-            {notice ? <div className="notice">{notice}</div> : null}
+            {deliveryMode === 'schedule' ? (
+              <input
+                className="input-underline"
+                type="datetime-local"
+                value={scheduledAt}
+                onChange={e => setScheduledAt(e.target.value)}
+              />
+            ) : null}
           </div>
-          <Preview html={previewHtml} />
+
+          <div className="section">
+            <p className="section-title">Send type</p>
+            <div className="radio-chips">
+              <label className={`chip ${sendMode === 'individual' ? 'active' : ''}`}>
+                <input
+                  type="radio"
+                  name="sendMode"
+                  value="individual"
+                  checked={sendMode === 'individual'}
+                  onChange={() => setSendMode('individual')}
+                />
+                <span>Send individually</span>
+              </label>
+              <label className={`chip ${sendMode === 'single' ? 'active' : ''}`}>
+                <input
+                  type="radio"
+                  name="sendMode"
+                  value="single"
+                  checked={sendMode === 'single'}
+                  onChange={() => setSendMode('single')}
+                />
+                <span>Send as single email</span>
+              </label>
+            </div>
+            <div className="helper">Individual sends support {'{{name}}'} personalization</div>
+          </div>
         </div>
-      </main>
+      </div>
+
+      <div className="right-pane">
+        <div className="composer-shell">
+          <Editor subject={subject} setSubject={setSubject} body={body} setBody={setBody} />
+          <div className="action-row">
+            <button className="ghost" onClick={handlePreview} disabled={disabled}>
+              {busy ? 'Working…' : 'Preview'}
+            </button>
+            <button className="primary" onClick={() => handleSend()} disabled={disabled}>
+              {busy ? (deliveryMode === 'schedule' ? 'Scheduling…' : 'Sending…') : actionLabel}
+            </button>
+            {saving ? <span className="helper">Saving…</span> : null}
+          </div>
+        </div>
+      </div>
+
+      <StatusBanner notice={notice} onClose={() => setNotice(null)} />
+
+      <SlidePanel open={previewOpen} title="Preview" onClose={() => setPreviewOpen(false)}>
+        <div className="panel-row">
+          <label className="helper">Preview as</label>
+          <select
+            className="input-underline"
+            value={previewRecipientId || ''}
+            onChange={e => setPreviewRecipientId(e.target.value)}
+          >
+            {recipients.map(r => (
+              <option key={r._id} value={r._id}>
+                {r.name} — {r.email}
+              </option>
+            ))}
+          </select>
+          <button className="text-button" onClick={handlePreview} disabled={!recipients.length}>
+            Refresh
+          </button>
+        </div>
+        <div className="preview-frame" dangerouslySetInnerHTML={{ __html: previewHtml }} />
+      </SlidePanel>
+
+      <SlidePanel open={historyOpen} title="History" onClose={() => setHistoryOpen(false)} width="50vw">
+        <div className="history-list">
+          {history.map(item => (
+            <button key={item.id} className="history-row" onClick={() => loadCampaign(item.id)}>
+              <div className="history-left">
+                <div className="subject-line">{item.subject}</div>
+                <div className="helper">{new Date(item.created_at).toLocaleString()}</div>
+              </div>
+              <div className="history-meta">
+                <span className={`status-pill ${item.status}`}>{item.status}</span>
+                <span className="helper">{item.recipient_count} recipients</span>
+              </div>
+            </button>
+          ))}
+          {!history.length && <div className="helper">No campaigns yet.</div>}
+        </div>
+      </SlidePanel>
+
+      {showConfirm ? (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <p>You are about to send {recipients.length} emails. This action cannot be undone.</p>
+            <div className="buttons">
+              <button className="text-button" onClick={() => setShowConfirm(false)}>Cancel</button>
+              <button className="primary" onClick={() => handleSend(true)}>Confirm &amp; Send</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

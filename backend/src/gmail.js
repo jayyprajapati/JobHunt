@@ -3,7 +3,11 @@ const path = require('path');
 const { google } = require('googleapis');
 require('dotenv').config();
 
-const TOKEN_PATH = path.join(__dirname, '..', 'data', 'tokens.json');
+const dataDir = path.join(__dirname, '..', 'data');
+if (!fs.existsSync(dataDir)) {
+  fs.mkdirSync(dataDir, { recursive: true });
+}
+const TOKEN_PATH = path.join(dataDir, 'tokens.json');
 
 function getOAuthClient() {
   const clientId = process.env.GOOGLE_CLIENT_ID;

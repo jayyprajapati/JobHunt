@@ -1,0 +1,98 @@
+# =========================
+# OS / System
+# =========================
+.DS_Store
+.DS_Store?
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# =========================
+# Node / JavaScript
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# =========================
+# Environment variables
+# =========================
+.env
+.env.local
+.env.development
+.env.production
+.env.test
+
+# =========================
+# Backend specific
+# =========================
+backend/node_modules/
+backend/.env
+backend/*.sqlite
+backend/*.sqlite3
+backend/db.sqlite
+backend/db.sqlite3
+backend/google-oauth.json
+backend/token.json
+
+# =========================
+# Frontend specific
+# =========================
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.env
+frontend/.env.local
+
+# =========================
+# Build outputs (generic)
+# =========================
+dist/
+build/
+
+# =========================
+# Logs
+# =========================
+logs/
+*.log
+
+# =========================
+# Editor / IDE
+# =========================
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# =========================
+# Temporary / Cache
+# =========================
+.cache/
+.tmp/
+temp/
+.tmp/
+
+# =========================
+# Testing / Coverage
+# =========================
+coverage/
+.nyc_output/
+
+# =========================
+# Misc
+# =========================
+*.pid
+*.seed
+*.tgz
+
+# SQLite
+*.db
+*.db-shm
+*.db-wal
+backend/src/data/*.db
+backend/src/data/*.db-shm
+backend/src/data/*.db-wal

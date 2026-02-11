@@ -1,125 +1,199 @@
 const express = require('express');
-const db = require('../db');
+const { Types } = require('mongoose');
+const { Campaign } = require('../db');
 const { renderTemplate } = require('../services/templateService');
 const { sendMimeEmail } = require('../gmail');
 
 const router = express.Router();
 
-function fetchCampaign(id) {
-  return db.prepare('SELECT * FROM campaigns WHERE id = ?').get(id);
-}
-
-function fetchRecipients(campaignId) {
-  return db
-    .prepare('SELECT * FROM recipients WHERE campaign_id = ? ORDER BY id ASC')
-    .all(campaignId);
+function normalizeDate(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 async function sendCampaign(campaignId) {
-  const campaign = fetchCampaign(campaignId);
-  if (!campaign) {
-    throw new Error('Campaign not found');
-  }
-  const recipients = db
-    .prepare(
-      "SELECT * FROM recipients WHERE campaign_id = ? AND status = 'pending' ORDER BY id ASC"
-    )
-    .all(campaignId);
+  const campaign = await Campaign.findById(campaignId);
+  if (!campaign) throw new Error('Campaign not found');
 
-  if (!recipients.length) {
-    return { sentCount: 0 };
+  const pending = campaign.recipients.filter(r => r.status === 'pending');
+  if (!pending.length) {
+    return { status: campaign.status, sentCount: 0 };
   }
-
-  const updateRecipient = db.prepare(
-    "UPDATE recipients SET status = 'sent' WHERE id = ?"
-  );
 
   if (campaign.send_mode === 'single') {
-    const first = recipients[0];
+    const first = pending[0];
     const html = renderTemplate(campaign.body_html, { name: first?.name || 'There' });
-    const toList = recipients.map(r => r.email);
+    const toList = pending.map(r => r.email);
     await sendMimeEmail({ to: toList, subject: campaign.subject, html });
-    recipients.forEach(r => updateRecipient.run(r.id));
+    pending.forEach(r => {
+      const subdoc = campaign.recipients.id(r._id);
+      if (subdoc) subdoc.status = 'sent';
+    });
   } else {
-    for (const r of recipients) {
-      const html = renderTemplate(campaign.body_html, { name: r.name });
-      await sendMimeEmail({ to: r.email, subject: campaign.subject, html });
-      updateRecipient.run(r.id);
+    for (const recipient of pending) {
+      const html = renderTemplate(campaign.body_html, { name: recipient.name });
+      try {
+        await sendMimeEmail({ to: recipient.email, subject: campaign.subject, html });
+        const subdoc = campaign.recipients.id(recipient._id);
+        if (subdoc) subdoc.status = 'sent';
+      } catch (err) {
+        const subdoc = campaign.recipients.id(recipient._id);
+        if (subdoc) subdoc.status = 'failed';
+      }
     }
   }
 
-  db.prepare("UPDATE campaigns SET status = 'sent' WHERE id = ?").run(campaignId);
-  return { sentCount: recipients.length };
+  campaign.status = 'sent';
+  await campaign.save();
+  return { status: 'sent', sentCount: pending.length };
 }
 
-router.post('/', (req, res) => {
-  const { subject, body_html, send_mode, recipients, scheduled_at } = req.body || {};
-  if (!subject || !body_html || !send_mode) {
-    return res.status(400).json({ error: 'subject, body_html, send_mode are required' });
-  }
-  if (!Array.isArray(recipients) || !recipients.length) {
-    return res.status(400).json({ error: 'recipients are required' });
-  }
-  if (!['single', 'individual'].includes(send_mode)) {
-    return res.status(400).json({ error: 'send_mode must be single or individual' });
-  }
-
-  const insertCampaign = db.prepare(
-    'INSERT INTO campaigns (subject, body_html, send_mode, scheduled_at, status) VALUES (?, ?, ?, ?, ?)' 
-  );
-  const insertRecipient = db.prepare(
-    'INSERT INTO recipients (campaign_id, email, name, status) VALUES (?, ?, ?, ?)' 
-  );
-
-  let initialStatus = 'draft';
-  if (scheduled_at) {
-    const when = new Date(scheduled_at);
-    if (!Number.isNaN(when) && when.getTime() > Date.now()) {
-      initialStatus = 'scheduled';
+router.post('/', async (req, res) => {
+  try {
+    const { subject, body_html, send_mode, recipients, scheduled_at, status } = req.body || {};
+    if (!subject || !subject.trim()) {
+      return res.status(400).json({ error: 'Subject is required' });
     }
-  }
-
-  const tx = db.transaction(() => {
-    const result = insertCampaign.run(subject, body_html, send_mode, scheduled_at || null, initialStatus);
-    const campaignId = result.lastInsertRowid;
-    for (const r of recipients) {
-      insertRecipient.run(campaignId, r.email, r.name || 'There', 'pending');
+    if (!body_html || !body_html.trim()) {
+      return res.status(400).json({ error: 'Body is required' });
     }
-    return campaignId;
-  });
+    if (!send_mode || !['single', 'individual'].includes(send_mode)) {
+      return res.status(400).json({ error: 'send_mode must be single or individual' });
+    }
+    if (!Array.isArray(recipients) || !recipients.length) {
+      return res.status(400).json({ error: 'At least one recipient is required' });
+    }
 
-  const campaignId = tx();
-  return res.json({ id: campaignId, status: initialStatus });
+    const when = normalizeDate(scheduled_at);
+    const initialStatus = status && ['draft', 'scheduled'].includes(status)
+      ? status
+      : when && when.getTime() > Date.now()
+        ? 'scheduled'
+        : 'draft';
+
+    const doc = await Campaign.create({
+      subject,
+      body_html,
+      send_mode,
+      recipients: recipients.map(r => ({ email: r.email, name: r.name || 'There', status: 'pending' })),
+      scheduled_at: when,
+      status: initialStatus,
+    });
+
+    return res.json({ id: doc._id.toString(), status: doc.status });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Failed to create campaign' });
+  }
 });
 
-router.post('/:id/preview', (req, res) => {
+router.patch('/:id', async (req, res) => {
   const { id } = req.params;
-  const campaign = fetchCampaign(id);
-  if (!campaign) return res.status(404).json({ error: 'Not found' });
-  const recipient = db
-    .prepare('SELECT * FROM recipients WHERE campaign_id = ? ORDER BY id ASC LIMIT 1')
-    .get(id);
-  if (!recipient) return res.status(404).json({ error: 'No recipients' });
-  const html = renderTemplate(campaign.body_html, { name: recipient.name });
-  res.json({ html });
+  if (!Types.ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
+  try {
+    const { subject, body_html, send_mode, recipients, scheduled_at, status } = req.body || {};
+    const update = {};
+    if (subject !== undefined) update.subject = subject;
+    if (body_html !== undefined) update.body_html = body_html;
+    if (send_mode && ['single', 'individual'].includes(send_mode)) update.send_mode = send_mode;
+    if (status && ['draft', 'scheduled', 'sent'].includes(status)) update.status = status;
+    if (scheduled_at !== undefined) update.scheduled_at = normalizeDate(scheduled_at);
+    if (Array.isArray(recipients)) {
+      update.recipients = recipients.map(r => ({
+        _id: r._id || new Types.ObjectId(),
+        email: r.email,
+        name: r.name || 'There',
+        status: r.status || 'pending',
+      }));
+    }
+    update.updated_at = new Date();
+
+    const doc = await Campaign.findByIdAndUpdate(id, update, { new: true });
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+    return res.json({ id: doc._id.toString(), status: doc.status });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Failed to update campaign' });
+  }
+});
+
+router.get('/', async (_req, res) => {
+  try {
+    const rows = await Campaign.aggregate([
+      {
+        $project: {
+          subject: 1,
+          status: 1,
+          scheduled_at: 1,
+          created_at: 1,
+          recipient_count: { $size: '$recipients' },
+        },
+      },
+      { $sort: { created_at: -1 } },
+    ]);
+    res.json(rows.map(r => ({ ...r, id: r._id.toString() })));
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Failed to load campaigns' });
+  }
+});
+
+router.get('/:id', async (req, res) => {
+  const { id } = req.params;
+  if (!Types.ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
+  try {
+    const doc = await Campaign.findById(id);
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+    const payload = doc.toObject({ versionKey: false });
+    payload.id = payload._id.toString();
+    delete payload._id;
+    res.json(payload);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Failed to load campaign' });
+  }
+});
+
+router.post('/:id/preview', async (req, res) => {
+  const { id } = req.params;
+  const { recipient_id } = req.body || {};
+  if (!Types.ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
+  try {
+    const campaign = await Campaign.findById(id);
+    if (!campaign) return res.status(404).json({ error: 'Not found' });
+    const target = recipient_id
+      ? campaign.recipients.id(recipient_id)
+      : campaign.recipients[0];
+    if (!target) return res.status(404).json({ error: 'No recipients' });
+    const html = renderTemplate(campaign.body_html, { name: target.name || 'There' });
+    res.json({ html });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Failed to render preview' });
+  }
 });
 
 router.post('/:id/send', async (req, res) => {
   const { id } = req.params;
-  const campaign = fetchCampaign(id);
-  if (!campaign) return res.status(404).json({ error: 'Not found' });
-
-  const scheduledAt = campaign.scheduled_at ? new Date(campaign.scheduled_at) : null;
-  const isFuture = scheduledAt && !Number.isNaN(scheduledAt) && scheduledAt.getTime() > Date.now();
-
-  if (isFuture) {
-    db.prepare("UPDATE campaigns SET status = 'scheduled' WHERE id = ?").run(id);
-    return res.json({ status: 'scheduled' });
-  }
+  const { confirm_bulk_send } = req.body || {};
+  if (!Types.ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
+    const campaign = await Campaign.findById(id);
+    if (!campaign) return res.status(404).json({ error: 'Not found' });
+
+    const recipientCount = campaign.recipients.length;
+    if (recipientCount > 5 && !confirm_bulk_send) {
+      return res.status(400).json({ error: 'Bulk send confirmation required' });
+    }
+
+    const scheduledAt = campaign.scheduled_at ? new Date(campaign.scheduled_at) : null;
+    const isFuture = scheduledAt && !Number.isNaN(scheduledAt) && scheduledAt.getTime() > Date.now();
+
+    if (isFuture) {
+      campaign.status = 'scheduled';
+      await campaign.save();
+      return res.json({ status: 'scheduled' });
+    }
+
     const result = await sendCampaign(id);
-    return res.json({ status: 'sent', ...result });
+    return res.json(result);
   } catch (err) {
     return res.status(500).json({ error: err.message || 'Failed to send' });
   }
