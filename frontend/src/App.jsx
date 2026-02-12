@@ -39,7 +39,6 @@ function SlidePanel({ open, title, onClose, children, width = '55vw' }) {
 }
 
 export default function App() {
-  const [rawInput, setRawInput] = useState('');
   const [recipients, setRecipients] = useState([]);
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
@@ -54,7 +53,9 @@ export default function App() {
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isAuthed, setIsAuthed] = useState(false);
   const [senderName, setSenderName] = useState('');
-  const [errors, setErrors] = useState({});
+  const [recipientTab, setRecipientTab] = useState('enter');
+  const [bulkInput, setBulkInput] = useState('');
+  const [errors, setErrors] = useState({ recipients: {} });
   const [showConfirm, setShowConfirm] = useState(false);
   const [history, setHistory] = useState([]);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -84,7 +85,8 @@ export default function App() {
   }, [recipients, previewRecipientId]);
 
   useEffect(() => {
-    const shouldSave = subject.trim() && stripHtml(body) && recipients.length;
+    const recipientsReady = recipients.length && recipients.every(r => emailRegex.test(r.email || '') && r.name && r.company);
+    const shouldSave = subject.trim() && stripHtml(body) && recipientsReady;
     if (!shouldSave) return undefined;
     const t = setTimeout(() => saveDraft(), 600);
     return () => clearTimeout(t);
@@ -106,28 +108,110 @@ export default function App() {
     }
   };
 
-  async function handleParse() {
-    const res = await fetch(`${API_BASE}/api/recipients/parse`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rawInput }),
-    });
-    const data = await res.json();
-    const withIds = (data || []).map(r => ({ ...r, _id: uid() }));
-    setRecipients(withIds);
-    if (withIds.length) setPreviewRecipientId(withIds[0]._id);
+  function handleBulkPaste(text) {
+    const parsed = parseBulkRecipients(text);
+    if (!parsed.length) return;
+    setRecipients(parsed);
+    setPreviewRecipientId(parsed[0]?._id || null);
+    setRecipientTab('enter');
+    setBulkInput('');
+    setErrors(prev => ({ ...prev, recipients: {}, recipientsGeneral: undefined }));
+  }
+
+  function validateRecipientField(field, value) {
+    if (field === 'email') return emailRegex.test(value || '');
+    return !!(value && value.trim());
   }
 
   function updateRecipient(idx, field, value) {
     setRecipients(prev => {
       const next = [...prev];
-      next[idx] = { ...next[idx], [field]: value };
+      const current = next[idx] || {};
+      next[idx] = { ...current, [field]: value };
+      const recId = next[idx]._id;
+      if (errors.recipients?.[recId]?.[field]) {
+        if (validateRecipientField(field, value)) {
+          setErrors(prev => {
+            const updated = { ...prev.recipients };
+            const existing = { ...(updated[recId] || {}) };
+            delete existing[field];
+            updated[recId] = existing;
+            return { ...prev, recipients: updated };
+          });
+        }
+      }
+        if (errors.recipientsGeneral && next.length) {
+          setErrors(prev => ({ ...prev, recipientsGeneral: undefined }));
+        }
       return next;
     });
   }
 
   function deleteRecipient(idx) {
-    setRecipients(prev => prev.filter((_, i) => i !== idx));
+    setRecipients(prev => {
+      const next = prev.filter((_, i) => i !== idx);
+      const removed = prev[idx];
+      if (removed && errors.recipients?.[removed._id]) {
+        setErrors(prevErr => {
+          const updated = { ...(prevErr.recipients || {}) };
+          delete updated[removed._id];
+          return { ...prevErr, recipients: updated };
+        });
+      }
+      return next;
+    });
+  }
+
+  function addRecipientRow() {
+    setRecipients(prev => [
+      ...prev,
+      { _id: uid(), email: '', name: '', company: '', status: 'pending' },
+    ]);
+    if (errors.recipientsGeneral) {
+      setErrors(prev => ({ ...prev, recipientsGeneral: undefined }));
+    }
+  }
+
+  function handleEmailBlur(idx) {
+    setRecipients(prev => {
+      const next = [...prev];
+      const rec = next[idx];
+      if (!rec) return prev;
+      const autofillName = !rec.name?.trim();
+      const autofillCompany = !rec.company?.trim();
+      if (emailRegex.test(rec.email || '')) {
+        next[idx] = {
+          ...rec,
+          name: autofillName ? extractName(rec.email) : rec.name,
+          company: autofillCompany ? extractCompany(rec.email) : rec.company,
+        };
+      }
+      return next;
+    });
+  }
+
+  function handleSubjectChange(value) {
+    setSubject(value);
+    if (errors.subject && value.trim()) {
+      setErrors(prev => ({ ...prev, subject: undefined }));
+    }
+  }
+
+  function handleBodyChange(value) {
+    setBody(value);
+    if (errors.body && stripHtml(value)) {
+      setErrors(prev => ({ ...prev, body: undefined }));
+    }
+  }
+
+  function handleScheduledChange(value) {
+    setScheduledAt(value);
+    if (errors.scheduledAt) {
+      const date = new Date(value);
+      if (value && !Number.isNaN(date.getTime()) && date.getTime() > Date.now()) {
+        setErrors(prev => ({ ...prev, scheduledAt: undefined }));
+      }
+    }
   }
 
   function buildPayload() {
@@ -150,8 +234,53 @@ export default function App() {
       .trim();
   }
 
+  function toTitle(word) {
+    if (!word) return '';
+    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+  }
+
+  function extractName(email) {
+    const local = (email || '').split('@')[0];
+    const cleaned = local.replace(/[0-9]/g, '');
+    const parts = cleaned.split(/[._-]+/).filter(Boolean);
+    if (!parts.length) return 'There';
+    return parts.map(toTitle).join(' ').trim() || 'There';
+  }
+
+  function extractCompany(email) {
+    const domain = (email || '').split('@')[1] || '';
+    if (!domain) return 'Company';
+    const main = domain.split('.')[0] || '';
+    return toTitle(main) || 'Company';
+  }
+
+  function parseBulkRecipients(raw) {
+    if (!raw) return [];
+    const tokens = raw
+      .split(/[\n,\s]+/)
+      .map(t => t.trim())
+      .filter(Boolean);
+
+    const seen = new Set();
+    const list = [];
+    for (const token of tokens) {
+      if (!emailRegex.test(token)) continue;
+      const email = token.toLowerCase();
+      if (seen.has(email)) continue;
+      seen.add(email);
+      list.push({
+        email,
+        name: extractName(email),
+        company: extractCompany(email),
+        _id: uid(),
+        status: 'pending',
+      });
+    }
+    return list;
+  }
+
   function validateForm() {
-    const nextErrors = {};
+    const nextErrors = { recipients: {} };
 
     if (!subject.trim()) {
       nextErrors.subject = 'Subject is required';
@@ -163,9 +292,23 @@ export default function App() {
     }
 
     if (!recipients.length) {
-      nextErrors.recipients = 'At least one valid recipient is required';
-    } else if (recipients.some(r => !emailRegex.test(r.email))) {
-      nextErrors.recipients = 'At least one valid recipient is required';
+      nextErrors.recipientsGeneral = 'At least one valid recipient is required';
+    } else {
+      recipients.forEach(rec => {
+        const recErrors = {};
+        if (!emailRegex.test(rec.email || '')) {
+          recErrors.email = 'Invalid email format';
+        }
+        if (!rec.name || !rec.name.trim()) {
+          recErrors.name = 'Name is required';
+        }
+        if (!rec.company || !rec.company.trim()) {
+          recErrors.company = 'Company is required';
+        }
+        if (Object.keys(recErrors).length) {
+          nextErrors.recipients[rec._id] = recErrors;
+        }
+      });
     }
 
     if (!isAuthed) {
@@ -184,6 +327,19 @@ export default function App() {
     }
 
     return nextErrors;
+  }
+
+  function hasValidationErrors(errs) {
+    const recipientErrors = errs.recipients || {};
+    const hasRecipientFieldErrors = Object.values(recipientErrors).some(obj => Object.keys(obj || {}).length);
+    return Boolean(
+      errs.subject ||
+      errs.body ||
+      errs.sender ||
+      errs.scheduledAt ||
+      errs.recipientsGeneral ||
+      hasRecipientFieldErrors
+    );
   }
 
   async function saveDraft(forceToast = false) {
@@ -249,7 +405,7 @@ export default function App() {
     setNotice(null);
     const validationErrors = validateForm();
     setErrors(validationErrors);
-    if (Object.keys(validationErrors).length) {
+    if (hasValidationErrors(validationErrors)) {
       return;
     }
 
@@ -273,7 +429,7 @@ export default function App() {
       } else {
         setNotice({ type: 'success', message: `Email sent to ${recipients.length} recipients` });
       }
-      setErrors({});
+      setErrors({ recipients: {} });
       await loadHistory();
     } catch (err) {
       setNotice({ type: 'error', message: err.message });
@@ -299,7 +455,7 @@ export default function App() {
       setRecipients(recs);
       setPreviewRecipientId(recs[0]?._id || null);
       setSenderName(data.sender_name || '');
-      setErrors({});
+      setErrors({ recipients: {} });
       if (data.scheduled_at) {
         setDeliveryMode('schedule');
         setScheduledAt(data.scheduled_at.slice(0, 16));
@@ -352,16 +508,46 @@ export default function App() {
           </div>
 
           <div className="section">
-            <EmailInput
-              rawInput={rawInput}
-              onChange={value => {
-                setRawInput(value);
-              }}
-              onParse={handleParse}
-              parsedCount={recipients.length}
-              error={errors.recipients}
-            />
-            <RecipientList recipients={recipients} onChange={updateRecipient} onDelete={deleteRecipient} />
+            <div className="section-title-row">
+              <h3 className="section-title">Recipients</h3>
+              <div className="tabs">
+                <button
+                  className={recipientTab === 'enter' ? 'active' : ''}
+                  onClick={() => setRecipientTab('enter')}
+                >
+                  Enter Emails
+                </button>
+                <button
+                  className={recipientTab === 'bulk' ? 'active' : ''}
+                  onClick={() => setRecipientTab('bulk')}
+                >
+                  Paste in Bulk
+                </button>
+              </div>
+            </div>
+
+            {recipientTab === 'enter' ? (
+              <>
+                <div className="helper">One email per row.</div>
+                <RecipientList
+                  recipients={recipients}
+                  onChange={updateRecipient}
+                  onDelete={deleteRecipient}
+                  onEmailBlur={handleEmailBlur}
+                  fieldErrors={errors.recipients}
+                />
+                <button className="text-button" onClick={addRecipientRow}>+ Add recipient</button>
+              </>
+            ) : (
+              <EmailInput
+                value={bulkInput}
+                onChange={setBulkInput}
+                onPaste={handleBulkPaste}
+                error={errors.recipientsGeneral}
+              />
+            )}
+
+            {errors.recipientsGeneral ? <div className="error-text">{errors.recipientsGeneral}</div> : null}
           </div>
 
           <div className="section">
@@ -371,6 +557,9 @@ export default function App() {
                 className={`chip ${deliveryMode === 'now' ? 'active' : ''}`}
                 onClick={() => {
                   setDeliveryMode('now');
+                  if (errors.scheduledAt) {
+                    setErrors(prev => ({ ...prev, scheduledAt: undefined }));
+                  }
                 }}
               >
                 Send now
@@ -388,7 +577,7 @@ export default function App() {
                 type="datetime-local"
                 value={scheduledAt}
                 onChange={e => {
-                  setScheduledAt(e.target.value);
+                  handleScheduledChange(e.target.value);
                 }}
               />
             ) : null}
@@ -429,13 +618,9 @@ export default function App() {
           <div className="composer-shell">
             <Editor
               subject={subject}
-              setSubject={value => {
-                setSubject(value);
-              }}
+              setSubject={handleSubjectChange}
               body={body}
-              setBody={value => {
-                setBody(value);
-              }}
+              setBody={handleBodyChange}
               subjectError={errors.subject}
               bodyError={errors.body}
             />

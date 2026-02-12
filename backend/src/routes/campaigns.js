@@ -23,7 +23,7 @@ async function sendCampaign(campaignId) {
 
   if (campaign.send_mode === 'single') {
     const first = pending[0];
-    const html = renderTemplate(campaign.body_html, { name: first?.name || 'There' });
+    const html = renderTemplate(campaign.body_html, { name: first?.name || 'There', company: first?.company || '' });
     const toList = pending.map(r => r.email);
     await sendMimeEmail({ to: toList, subject: campaign.subject, html, senderName: campaign.sender_name });
     pending.forEach(r => {
@@ -32,7 +32,7 @@ async function sendCampaign(campaignId) {
     });
   } else {
     for (const recipient of pending) {
-      const html = renderTemplate(campaign.body_html, { name: recipient.name });
+      const html = renderTemplate(campaign.body_html, { name: recipient.name, company: recipient.company || '' });
       try {
         await sendMimeEmail({ to: recipient.email, subject: campaign.subject, html, senderName: campaign.sender_name });
         const subdoc = campaign.recipients.id(recipient._id);
@@ -77,7 +77,7 @@ router.post('/', async (req, res) => {
       body_html,
       sender_name: sender_name || '',
       send_mode,
-      recipients: recipients.map(r => ({ email: r.email, name: r.name || 'There', status: 'pending' })),
+      recipients: recipients.map(r => ({ email: r.email, name: r.name || 'There', company: r.company || 'Company', status: 'pending' })),
       scheduled_at: when,
       status: initialStatus,
     });
@@ -105,6 +105,7 @@ router.patch('/:id', async (req, res) => {
         _id: r._id || new Types.ObjectId(),
         email: r.email,
         name: r.name || 'There',
+        company: r.company || 'Company',
         status: r.status || 'pending',
       }));
     }
@@ -164,7 +165,7 @@ router.post('/:id/preview', async (req, res) => {
       ? campaign.recipients.id(recipient_id)
       : campaign.recipients[0];
     if (!target) return res.status(404).json({ error: 'No recipients' });
-    const html = renderTemplate(campaign.body_html, { name: target.name || 'There' });
+    const html = renderTemplate(campaign.body_html, { name: target.name || 'There', company: target.company || '' });
     res.json({ html });
   } catch (err) {
     res.status(500).json({ error: err.message || 'Failed to render preview' });

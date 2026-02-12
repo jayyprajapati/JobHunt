@@ -15,7 +15,7 @@ export default function Editor({ subject, setSubject, body, setBody, subjectErro
     <div className="composer">
       <div className="composer-header">
         <p className="eyebrow">Compose</p>
-        <span className="helper">Available variables: {'{{name}}'}</span>
+        <span className="helper">Available variables: {'{{name}}'} {'{{company}}'}</span>
       </div>
 
       <input

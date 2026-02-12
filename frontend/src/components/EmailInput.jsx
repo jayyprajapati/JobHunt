@@ -1,23 +1,21 @@
 import React from 'react';
 
-export default function EmailInput({ rawInput, onChange, onParse, parsedCount, error }) {
+export default function EmailInput({ value, onChange, onPaste, error }) {
   return (
     <div className="section">
-      <p className="eyebrow">Recipients</p>
-      <div className="section-title-row">
-        <h3 className="section-title">Paste, review, personalize</h3>
-        <button className="text-button" onClick={onParse}>Parse</button>
-      </div>
       <textarea
         className="textarea-underline"
-        rows={5}
-        placeholder="Paste email addresses here (comma or newline separated)"
-        value={rawInput}
+        rows={6}
+        placeholder="Paste emails separated by comma or newline"
+        value={value}
         onChange={e => onChange(e.target.value)}
+        onPaste={e => {
+          const text = e.clipboardData?.getData('text') || '';
+          e.preventDefault();
+          onPaste(text);
+        }}
       />
-      <div className="helper">
-        {parsedCount ? `${parsedCount} recipient${parsedCount === 1 ? '' : 's'} found` : 'Newlines, commas, or spaces all work'}
-      </div>
+      <div className="helper">Paste to auto-parse into structured rows.</div>
       {error ? <div className="error-text">{error}</div> : null}
     </div>
   );
