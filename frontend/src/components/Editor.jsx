@@ -10,7 +10,7 @@ const modules = {
   ],
 };
 
-export default function Editor({ subject, setSubject, body, setBody }) {
+export default function Editor({ subject, setSubject, body, setBody, subjectError, bodyError }) {
   return (
     <div className="composer">
       <div className="composer-header">
@@ -24,17 +24,21 @@ export default function Editor({ subject, setSubject, body, setBody }) {
         onChange={e => setSubject(e.target.value)}
         placeholder="Subject"
       />
+      {subjectError ? <div className="error-text">{subjectError}</div> : null}
 
-      <div className="editor-shell">
-        <ReactQuill
-          theme="snow"
-          value={body}
-          onChange={setBody}
-          readOnly={false}
-          modules={modules}
-          placeholder="Write the email body"
-        />
+      <div className="editor-container">
+        <div className="editor-shell">
+          <ReactQuill
+            theme="snow"
+            value={body}
+            onChange={setBody}
+            readOnly={false}
+            modules={modules}
+            placeholder="Write the email body"
+          />
+        </div>
       </div>
+      {bodyError ? <div className="error-text">{bodyError}</div> : null}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import RecipientList from './components/RecipientList.jsx';
 import Editor from './components/Editor.jsx';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000';
+const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function uid() {
   if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
@@ -48,9 +49,12 @@ export default function App() {
   const [previewHtml, setPreviewHtml] = useState('');
   const [previewRecipientId, setPreviewRecipientId] = useState(null);
   const [notice, setNotice] = useState(null);
-  const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [isPreviewing, setIsPreviewing] = useState(false);
   const [isAuthed, setIsAuthed] = useState(false);
+  const [senderName, setSenderName] = useState('');
+  const [errors, setErrors] = useState({});
   const [showConfirm, setShowConfirm] = useState(false);
   const [history, setHistory] = useState([]);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -80,13 +84,13 @@ export default function App() {
   }, [recipients, previewRecipientId]);
 
   useEffect(() => {
-    const shouldSave = subject.trim() || body.trim() || recipients.length;
+    const shouldSave = subject.trim() && stripHtml(body) && recipients.length;
     if (!shouldSave) return undefined;
     const t = setTimeout(() => saveDraft(), 600);
     return () => clearTimeout(t);
   }, [subject, body, recipients, sendMode, deliveryMode, scheduledAt]);
 
-  const refreshAuth = async () => 
+  const refreshAuth = async () =>
     fetch(`${API_BASE}/auth/status`)
       .then(r => r.json())
       .then(data => setIsAuthed(!!data.authenticated))
@@ -131,6 +135,7 @@ export default function App() {
     return {
       subject,
       body_html: body,
+      sender_name: senderName,
       send_mode: sendMode,
       recipients,
       scheduled_at: when && !Number.isNaN(when) ? when.toISOString() : null,
@@ -138,9 +143,52 @@ export default function App() {
     };
   }
 
+  function stripHtml(html) {
+    return (html || '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function validateForm() {
+    const nextErrors = {};
+
+    if (!subject.trim()) {
+      nextErrors.subject = 'Subject is required';
+    }
+
+    const bodyText = stripHtml(body);
+    if (!bodyText) {
+      nextErrors.body = 'Email body cannot be empty';
+    }
+
+    if (!recipients.length) {
+      nextErrors.recipients = 'At least one valid recipient is required';
+    } else if (recipients.some(r => !emailRegex.test(r.email))) {
+      nextErrors.recipients = 'At least one valid recipient is required';
+    }
+
+    if (!isAuthed) {
+      nextErrors.sender = 'Connect Gmail to resolve sender identity';
+    }
+
+    if (deliveryMode === 'schedule') {
+      if (!scheduledAt) {
+        nextErrors.scheduledAt = 'Scheduled time must be in the future';
+      } else {
+        const date = new Date(scheduledAt);
+        if (Number.isNaN(date.getTime()) || date.getTime() <= Date.now()) {
+          nextErrors.scheduledAt = 'Scheduled time must be in the future';
+        }
+      }
+    }
+
+    return nextErrors;
+  }
+
   async function saveDraft(forceToast = false) {
     const payload = buildPayload();
-    if (!payload.subject && !payload.body_html && !payload.recipients.length) return;
+    if (!payload.subject || !payload.body_html || !payload.recipients.length) return;
     setSaving(true);
     try {
       let res;
@@ -174,7 +222,7 @@ export default function App() {
   }
 
   async function handlePreview() {
-    setBusy(true);
+    setIsPreviewing(true);
     setNotice(null);
     try {
       const id = (await saveDraft()) || draftId;
@@ -193,17 +241,23 @@ export default function App() {
     } catch (err) {
       setNotice({ type: 'error', message: err.message });
     } finally {
-      setBusy(false);
+      setIsPreviewing(false);
     }
   }
 
   async function handleSend(confirmed = false) {
+    setNotice(null);
+    const validationErrors = validateForm();
+    setErrors(validationErrors);
+    if (Object.keys(validationErrors).length) {
+      return;
+    }
+
     if (recipients.length > 5 && !confirmed) {
       setShowConfirm(true);
       return;
     }
-    setBusy(true);
-    setNotice(null);
+    setIsSending(true);
     try {
       const id = (await saveDraft()) || draftId;
       if (!id) throw new Error('Save a draft before sending');
@@ -219,11 +273,12 @@ export default function App() {
       } else {
         setNotice({ type: 'success', message: `Email sent to ${recipients.length} recipients` });
       }
+      setErrors({});
       await loadHistory();
     } catch (err) {
       setNotice({ type: 'error', message: err.message });
     } finally {
-      setBusy(false);
+      setIsSending(false);
       setShowConfirm(false);
     }
   }
@@ -243,6 +298,8 @@ export default function App() {
       const recs = (data.recipients || []).map(r => ({ ...r, _id: r._id || uid() }));
       setRecipients(recs);
       setPreviewRecipientId(recs[0]?._id || null);
+      setSenderName(data.sender_name || '');
+      setErrors({});
       if (data.scheduled_at) {
         setDeliveryMode('schedule');
         setScheduledAt(data.scheduled_at.slice(0, 16));
@@ -258,7 +315,8 @@ export default function App() {
     }
   }
 
-  const disabled = !recipients.length || !subject.trim() || !body.trim() || busy;
+  const actionDisabled = isSending;
+  const previewDisabled = isPreviewing || !recipients.length || !subject.trim() || !stripHtml(body);
   const actionLabel = deliveryMode === 'schedule' ? 'Schedule' : 'Send';
 
   return (
@@ -280,17 +338,47 @@ export default function App() {
 
         <div className="sections">
           <div className="section">
-            <EmailInput rawInput={rawInput} onChange={setRawInput} onParse={handleParse} parsedCount={recipients.length} />
+            <p className="section-title">Sender</p>
+            <input
+              className="input-underline"
+              value={senderName}
+              onChange={e => {
+                setSenderName(e.target.value);
+              }}
+              placeholder="Uses your Gmail name by default"
+            />
+            <div className="helper">Optional display name override.</div>
+            {errors.sender ? <div className="error-text">{errors.sender}</div> : null}
+          </div>
+
+          <div className="section">
+            <EmailInput
+              rawInput={rawInput}
+              onChange={value => {
+                setRawInput(value);
+              }}
+              onParse={handleParse}
+              parsedCount={recipients.length}
+              error={errors.recipients}
+            />
             <RecipientList recipients={recipients} onChange={updateRecipient} onDelete={deleteRecipient} />
           </div>
 
           <div className="section">
             <p className="section-title">Delivery</p>
             <div className="chip-toggle">
-              <button className={`chip ${deliveryMode === 'now' ? 'active' : ''}`} onClick={() => setDeliveryMode('now')}>
+              <button
+                className={`chip ${deliveryMode === 'now' ? 'active' : ''}`}
+                onClick={() => {
+                  setDeliveryMode('now');
+                }}
+              >
                 Send now
               </button>
-              <button className={`chip ${deliveryMode === 'schedule' ? 'active' : ''}`} onClick={() => setDeliveryMode('schedule')}>
+              <button
+                className={`chip ${deliveryMode === 'schedule' ? 'active' : ''}`}
+                onClick={() => setDeliveryMode('schedule')}
+              >
                 Schedule
               </button>
             </div>
@@ -299,9 +387,12 @@ export default function App() {
                 className="input-underline"
                 type="datetime-local"
                 value={scheduledAt}
-                onChange={e => setScheduledAt(e.target.value)}
+                onChange={e => {
+                  setScheduledAt(e.target.value);
+                }}
               />
             ) : null}
+            {errors.scheduledAt ? <div className="error-text">{errors.scheduledAt}</div> : null}
           </div>
 
           <div className="section">
@@ -333,17 +424,30 @@ export default function App() {
         </div>
       </div>
 
-      <div className="right-pane">
-        <div className="composer-shell">
-          <Editor subject={subject} setSubject={setSubject} body={body} setBody={setBody} />
-          <div className="action-row">
-            <button className="ghost" onClick={handlePreview} disabled={disabled}>
-              {busy ? 'Working…' : 'Preview'}
-            </button>
-            <button className="primary" onClick={() => handleSend()} disabled={disabled}>
-              {busy ? (deliveryMode === 'schedule' ? 'Scheduling…' : 'Sending…') : actionLabel}
-            </button>
-            {saving ? <span className="helper">Saving…</span> : null}
+      <div className="right-panel">
+        <div className="content-wrapper">
+          <div className="composer-shell">
+            <Editor
+              subject={subject}
+              setSubject={value => {
+                setSubject(value);
+              }}
+              body={body}
+              setBody={value => {
+                setBody(value);
+              }}
+              subjectError={errors.subject}
+              bodyError={errors.body}
+            />
+            <div className="button-row">
+              <button className="ghost" onClick={handlePreview} disabled={previewDisabled}>
+                {isPreviewing ? 'Working…' : 'Preview'}
+              </button>
+              <button className="primary" onClick={() => handleSend()} disabled={actionDisabled}>
+                {isSending ? (deliveryMode === 'schedule' ? 'Scheduling…' : 'Sending…') : actionLabel}
+              </button>
+            </div>
+            {saving ? <div className="helper saving-hint">Saving…</div> : null}
           </div>
         </div>
       </div>

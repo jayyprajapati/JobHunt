@@ -25,7 +25,7 @@ async function sendCampaign(campaignId) {
     const first = pending[0];
     const html = renderTemplate(campaign.body_html, { name: first?.name || 'There' });
     const toList = pending.map(r => r.email);
-    await sendMimeEmail({ to: toList, subject: campaign.subject, html });
+    await sendMimeEmail({ to: toList, subject: campaign.subject, html, senderName: campaign.sender_name });
     pending.forEach(r => {
       const subdoc = campaign.recipients.id(r._id);
       if (subdoc) subdoc.status = 'sent';
@@ -34,7 +34,7 @@ async function sendCampaign(campaignId) {
     for (const recipient of pending) {
       const html = renderTemplate(campaign.body_html, { name: recipient.name });
       try {
-        await sendMimeEmail({ to: recipient.email, subject: campaign.subject, html });
+        await sendMimeEmail({ to: recipient.email, subject: campaign.subject, html, senderName: campaign.sender_name });
         const subdoc = campaign.recipients.id(recipient._id);
         if (subdoc) subdoc.status = 'sent';
       } catch (err) {
@@ -51,7 +51,7 @@ async function sendCampaign(campaignId) {
 
 router.post('/', async (req, res) => {
   try {
-    const { subject, body_html, send_mode, recipients, scheduled_at, status } = req.body || {};
+    const { subject, body_html, send_mode, recipients, scheduled_at, status, sender_name } = req.body || {};
     if (!subject || !subject.trim()) {
       return res.status(400).json({ error: 'Subject is required' });
     }
@@ -75,6 +75,7 @@ router.post('/', async (req, res) => {
     const doc = await Campaign.create({
       subject,
       body_html,
+      sender_name: sender_name || '',
       send_mode,
       recipients: recipients.map(r => ({ email: r.email, name: r.name || 'There', status: 'pending' })),
       scheduled_at: when,
@@ -91,10 +92,11 @@ router.patch('/:id', async (req, res) => {
   const { id } = req.params;
   if (!Types.ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
   try {
-    const { subject, body_html, send_mode, recipients, scheduled_at, status } = req.body || {};
+    const { subject, body_html, send_mode, recipients, scheduled_at, status, sender_name } = req.body || {};
     const update = {};
     if (subject !== undefined) update.subject = subject;
     if (body_html !== undefined) update.body_html = body_html;
+    if (sender_name !== undefined) update.sender_name = sender_name;
     if (send_mode && ['single', 'individual'].includes(send_mode)) update.send_mode = send_mode;
     if (status && ['draft', 'scheduled', 'sent'].includes(status)) update.status = status;
     if (scheduled_at !== undefined) update.scheduled_at = normalizeDate(scheduled_at);

@@ -19,6 +19,7 @@ const campaignSchema = new mongoose.Schema(
   {
     subject: { type: String, required: true, trim: true },
     body_html: { type: String, required: true },
+    sender_name: { type: String, default: '' },
     recipients: { type: [recipientSchema], default: [] },
     send_mode: { type: String, enum: ['single', 'individual'], required: true },
     scheduled_at: { type: Date, default: null },

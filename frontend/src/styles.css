@@ -132,6 +132,12 @@ body {
   font-size: 12px;
 }
 
+.error-text {
+  color: var(--error);
+  font-size: 12px;
+  margin-top: -4px;
+}
+
 .text-button,
 .icon-button,
 .status-chip {
@@ -266,6 +272,7 @@ body {
 }
 
 
+.right-panel,
 .right-pane {
   width: 62%;
   background: var(--soft);
@@ -277,12 +284,20 @@ body {
   color: #ffffff;
 }
 
+.content-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 0;
+}
+
 .composer-shell {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  height: 100%;
   min-height: 0;
+  max-height: 100%;
 }
 
 .composer {
@@ -291,11 +306,12 @@ body {
   gap: 8px;
 }
 
-.action-row {
+.button-row {
   display: flex;
   justify-content: flex-end;
-  align-items: center;
-  gap: 12px;
+  gap: 16px;
+  width: 100%;
+  flex-shrink: 0;
 }
 
 .ghost {
@@ -323,21 +339,26 @@ button.primary:disabled,
   cursor: not-allowed;
 }
 
+.right-panel .ghost,
 .right-pane .ghost {
   border: 1px solid rgba(255, 255, 255, 0.65);
   color: #ffffff;
 }
 
+.right-panel button.primary,
 .right-pane button.primary {
   background: #ffffff;
   color: #008BFF;
   border: none;
 }
 
+.right-panel button.primary:hover,
 .right-pane button.primary:hover {
   background: rgba(255, 255, 255, 0.92);
 }
 
+.right-panel .ghost,
+.right-panel .button.secondary,
 .right-pane .ghost,
 .right-pane .button.secondary {
   background: transparent;
@@ -345,6 +366,8 @@ button.primary:disabled,
   border: 1px solid #ffffff;
 }
 
+.right-panel .ghost:hover,
+.right-panel .button.secondary:hover,
 .right-pane .ghost:hover,
 .right-pane .button.secondary:hover {
   background: rgba(255, 255, 255, 0.12);
@@ -358,10 +381,12 @@ button.primary:disabled,
   margin-bottom: 4px;
 }
 
+.right-panel .composer-header .eyebrow,
 .right-pane .composer-header .eyebrow {
   color: #ffffff;
 }
 
+.right-panel .composer-header .helper,
 .right-pane .composer-header .helper {
   color: #ffffff;
 }
@@ -378,11 +403,13 @@ button.primary:disabled,
   color: inherit;
 }
 
+.right-panel .subject-input,
 .right-pane .subject-input {
   border-bottom-color: rgba(255, 255, 255, 0.55);
   color: #ffffff;
 }
 
+.right-panel .subject-input::placeholder,
 .right-pane .subject-input::placeholder {
   color: rgba(255, 255, 255, 0.7);
 }
@@ -392,8 +419,16 @@ button.primary:disabled,
   border-bottom-color: var(--accent);
 }
 
+.right-panel .subject-input:focus,
 .right-pane .subject-input:focus {
   border-bottom-color: #ffffff;
+}
+
+.editor-container {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  max-height: 60vh;
 }
 
 .editor-shell {
@@ -401,6 +436,9 @@ button.primary:disabled,
   overflow: hidden;
   background: #ffffff;
   color: #0f172a;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
 }
 
 .editor-shell .ql-toolbar {
@@ -409,10 +447,17 @@ button.primary:disabled,
 
 .editor-shell .ql-container {
   border-radius: 0 0 14px 14px;
+  flex: 1;
+  min-height: 200px;
+  overflow-y: auto;
 }
 
 .editor-shell .ql-editor {
   min-height: 200px;
+}
+
+.saving-hint {
+  text-align: right;
 }
 
 .status-banner {
@@ -588,12 +633,14 @@ button.primary:disabled,
   }
 
   .left-pane,
-  .right-pane {
+  .right-pane,
+  .right-panel {
     width: 100%;
     height: auto;
   }
 
-  .right-pane {
+  .right-pane,
+  .right-panel {
     min-height: 60vh;
   }
 }

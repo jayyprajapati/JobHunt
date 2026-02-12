@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { getAuthUrl, handleAuthCode, isAuthenticated } = require('./gmail');
+const { getAuthUrl, handleAuthCode, isAuthenticated, getSenderProfile } = require('./gmail');
 const recipientRoutes = require('./routes/recipients');
 const { router: campaignRoutes } = require('./routes/campaigns');
 const { startScheduler } = require('./scheduler');
@@ -23,7 +23,7 @@ app.get('/health', (_req, res) => {
 });
 
 app.get('/auth/status', (_req, res) => {
-  res.json({ authenticated: isAuthenticated() });
+  res.json({ authenticated: isAuthenticated(), sender: getSenderProfile() });
 });
 
 app.get('/auth/google', (_req, res) => {
