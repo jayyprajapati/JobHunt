@@ -36,7 +36,7 @@ backend/db.sqlite
 backend/db.sqlite3
 backend/google-oauth.json
 backend/token.json
-
+backend/data/
 # =========================
 # Frontend specific
 # =========================
