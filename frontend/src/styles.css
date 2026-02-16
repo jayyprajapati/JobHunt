@@ -471,6 +471,7 @@ button.primary:disabled,
   display: flex;
   flex-direction: column;
   height: 100%;
+  position: relative;
 }
 
 .editor-shell .ql-toolbar {
@@ -486,6 +487,35 @@ button.primary:disabled,
 
 .editor-shell .ql-editor {
   min-height: 200px;
+}
+
+.slash-menu {
+  position: absolute;
+  background: #0f172a;
+  color: #fff;
+  border-radius: 10px;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.28);
+  display: inline-flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 5;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  min-width: 140px;
+}
+
+.slash-menu button {
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.slash-menu button.active,
+.slash-menu button:hover {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .saving-hint {
@@ -650,6 +680,13 @@ button.primary:disabled,
   padding: 20px;
   width: 360px;
   box-shadow: 0 16px 38px rgba(15, 23, 42, 0.18);
+}
+
+.modal-body {
+  margin: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .buttons {

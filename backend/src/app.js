@@ -4,6 +4,8 @@ const cors = require('cors');
 const { getAuthUrl, handleAuthCode, isAuthenticated, getSenderProfile } = require('./gmail');
 const recipientRoutes = require('./routes/recipients');
 const { router: campaignRoutes } = require('./routes/campaigns');
+const groupRoutes = require('./routes/groups');
+const templateRoutes = require('./routes/templates');
 const { startScheduler } = require('./scheduler');
 const { connectMongo } = require('./db');
 
@@ -48,6 +50,8 @@ app.get('/auth/google/callback', async (req, res) => {
 
 app.use('/api/recipients', recipientRoutes);
 app.use('/api/campaigns', campaignRoutes);
+app.use('/api/groups', groupRoutes);
+app.use('/api/templates', templateRoutes);
 
 connectMongo()
   .then(() => {

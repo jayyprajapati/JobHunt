@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import EmailInput from './components/EmailInput.jsx';
 import RecipientList from './components/RecipientList.jsx';
 import Editor from './components/Editor.jsx';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000';
+const USER_ID = 'demo-user';
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function uid() {
@@ -38,6 +39,21 @@ function SlidePanel({ open, title, onClose, children, width = '55vw' }) {
   );
 }
 
+function Modal({ open, title, onClose, children, width = 420 }) {
+  if (!open) return null;
+  return (
+    <div className="modal-backdrop">
+      <div className="modal" style={{ width }}>
+        {title ? <p className="section-title">{title}</p> : null}
+        <div className="modal-body">{children}</div>
+        <div className="buttons">
+          <button className="text-button" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [recipients, setRecipients] = useState([]);
   const [subject, setSubject] = useState('');
@@ -47,6 +63,7 @@ export default function App() {
   const [scheduledAt, setScheduledAt] = useState('');
   const [previewHtml, setPreviewHtml] = useState('');
   const [previewRecipientId, setPreviewRecipientId] = useState(null);
+  const [previewRecipientMeta, setPreviewRecipientMeta] = useState(null);
   const [notice, setNotice] = useState(null);
   const [saving, setSaving] = useState(false);
   const [isSending, setIsSending] = useState(false);
@@ -56,11 +73,25 @@ export default function App() {
   const [recipientTab, setRecipientTab] = useState('enter');
   const [bulkInput, setBulkInput] = useState('');
   const [errors, setErrors] = useState({ recipients: {} });
-  const [showConfirm, setShowConfirm] = useState(false);
   const [history, setHistory] = useState([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [draftId, setDraftId] = useState(null);
+  const [groups, setGroups] = useState([]);
+  const [templates, setTemplates] = useState([]);
+  const [groupModalOpen, setGroupModalOpen] = useState(false);
+  const [groupTitle, setGroupTitle] = useState('');
+  const [groupRecipients, setGroupRecipients] = useState([]);
+  const [groupErrors, setGroupErrors] = useState({ recipients: {} });
+  const [groupImportOpen, setGroupImportOpen] = useState(false);
+  const [groupToConfirm, setGroupToConfirm] = useState(null);
+  const [importedGroupId, setImportedGroupId] = useState(null);
+  const [importedGroupEmails, setImportedGroupEmails] = useState([]);
+  const [pendingGroupExtras, setPendingGroupExtras] = useState(0);
+  const [templateTitlePrompt, setTemplateTitlePrompt] = useState(false);
+  const [templateTitle, setTemplateTitle] = useState('');
+  const [templateImportOpen, setTemplateImportOpen] = useState(false);
+  const [templateToConfirm, setTemplateToConfirm] = useState(null);
 
   useEffect(() => {
     refreshAuth();
@@ -92,6 +123,21 @@ export default function App() {
     return () => clearTimeout(t);
   }, [subject, body, recipients, sendMode, deliveryMode, scheduledAt]);
 
+  useEffect(() => {
+    if (!importedGroupId) {
+      setPendingGroupExtras(0);
+      return;
+    }
+    const baseline = new Set((importedGroupEmails || []).map(e => (e || '').toLowerCase()));
+    const extras = recipients.filter(r => {
+      const email = (r.email || '').toLowerCase();
+      return email && emailRegex.test(email) && r.name && r.company && !baseline.has(email);
+    });
+    setPendingGroupExtras(extras.length);
+  }, [recipients, importedGroupId, importedGroupEmails]);
+
+  const authHeaders = useMemo(() => ({ 'Content-Type': 'application/json', 'x-user-id': USER_ID }), []);
+
   const refreshAuth = async () =>
     fetch(`${API_BASE}/auth/status`)
       .then(r => r.json())
@@ -108,6 +154,28 @@ export default function App() {
     }
   };
 
+  const loadGroups = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/groups`, { headers: authHeaders });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load groups');
+      setGroups(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setNotice({ type: 'error', message: err.message });
+    }
+  };
+
+  const loadTemplates = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/templates`, { headers: authHeaders });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load templates');
+      setTemplates(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setNotice({ type: 'error', message: err.message });
+    }
+  };
+
   function handleBulkPaste(text) {
     const parsed = parseBulkRecipients(text);
     if (!parsed.length) return;
@@ -116,11 +184,24 @@ export default function App() {
     setRecipientTab('enter');
     setBulkInput('');
     setErrors(prev => ({ ...prev, recipients: {}, recipientsGeneral: undefined }));
+    setImportedGroupId(null);
+    setImportedGroupEmails([]);
   }
 
   function validateRecipientField(field, value) {
     if (field === 'email') return emailRegex.test(value || '');
     return !!(value && value.trim());
+  }
+
+  function sanitizeRecipient(rec) {
+    return {
+      ...rec,
+      email: (rec.email || '').toLowerCase().trim(),
+      name: (rec.name || '').trim(),
+      company: (rec.company || '').trim(),
+      _id: rec._id || uid(),
+      status: rec.status || 'pending',
+    };
   }
 
   function updateRecipient(idx, field, value) {
@@ -140,9 +221,9 @@ export default function App() {
           });
         }
       }
-        if (errors.recipientsGeneral && next.length) {
-          setErrors(prev => ({ ...prev, recipientsGeneral: undefined }));
-        }
+      if (errors.recipientsGeneral && next.length) {
+        setErrors(prev => ({ ...prev, recipientsGeneral: undefined }));
+      }
       return next;
     });
   }
@@ -221,7 +302,7 @@ export default function App() {
       body_html: body,
       sender_name: senderName,
       send_mode: sendMode,
-      recipients,
+      recipients: recipients.map(sanitizeRecipient),
       scheduled_at: when && !Number.isNaN(when) ? when.toISOString() : null,
       status: deliveryMode === 'schedule' && when && when.getTime() > Date.now() ? 'scheduled' : 'draft',
     };
@@ -279,6 +360,22 @@ export default function App() {
     return list;
   }
 
+  function validateRecipients(list) {
+    const recErrors = {};
+    let general;
+    if (!list.length) {
+      general = 'At least one valid recipient is required';
+    }
+    list.forEach(rec => {
+      const errs = {};
+      if (!emailRegex.test(rec.email || '')) errs.email = 'Invalid email format';
+      if (!rec.name || !rec.name.trim()) errs.name = 'Name is required';
+      if (!rec.company || !rec.company.trim()) errs.company = 'Company is required';
+      if (Object.keys(errs).length) recErrors[rec._id] = errs;
+    });
+    return { recErrors, general };
+  }
+
   function validateForm() {
     const nextErrors = { recipients: {} };
 
@@ -291,25 +388,9 @@ export default function App() {
       nextErrors.body = 'Email body cannot be empty';
     }
 
-    if (!recipients.length) {
-      nextErrors.recipientsGeneral = 'At least one valid recipient is required';
-    } else {
-      recipients.forEach(rec => {
-        const recErrors = {};
-        if (!emailRegex.test(rec.email || '')) {
-          recErrors.email = 'Invalid email format';
-        }
-        if (!rec.name || !rec.name.trim()) {
-          recErrors.name = 'Name is required';
-        }
-        if (!rec.company || !rec.company.trim()) {
-          recErrors.company = 'Company is required';
-        }
-        if (Object.keys(recErrors).length) {
-          nextErrors.recipients[rec._id] = recErrors;
-        }
-      });
-    }
+    const { recErrors, general } = validateRecipients(recipients);
+    nextErrors.recipients = recErrors;
+    if (general) nextErrors.recipientsGeneral = general;
 
     if (!isAuthed) {
       nextErrors.sender = 'Connect Gmail to resolve sender identity';
@@ -352,13 +433,13 @@ export default function App() {
       if (draftId) {
         res = await fetch(`${API_BASE}/api/campaigns/${draftId}`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders,
           body: JSON.stringify(payload),
         });
       } else {
         res = await fetch(`${API_BASE}/api/campaigns`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders,
           body: JSON.stringify(payload),
         });
       }
@@ -377,20 +458,20 @@ export default function App() {
     }
   }
 
-  async function handlePreview() {
+  async function fetchPreview(targetId) {
     setIsPreviewing(true);
-    setNotice(null);
     try {
       const id = (await saveDraft()) || draftId;
-      const targetId = previewRecipientId || (recipients[0]?.id || recipients[0]?._id);
       if (!id) throw new Error('Save a draft before previewing');
       const res = await fetch(`${API_BASE}/api/campaigns/${id}/preview`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders,
         body: JSON.stringify({ recipient_id: targetId }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Preview failed');
+      const meta = recipients.find(r => r._id === targetId) || recipients[0];
+      setPreviewRecipientMeta(meta || null);
       setPreviewHtml(data.html || '');
       setPreviewOpen(true);
       setNotice({ type: 'info', message: 'Preview ready' });
@@ -401,25 +482,24 @@ export default function App() {
     }
   }
 
-  async function handleSend(confirmed = false) {
-    setNotice(null);
+  async function handlePreviewContinue() {
     const validationErrors = validateForm();
     setErrors(validationErrors);
-    if (hasValidationErrors(validationErrors)) {
-      return;
-    }
+    if (hasValidationErrors(validationErrors)) return;
+    const random = recipients[Math.floor(Math.random() * recipients.length)];
+    setPreviewRecipientId(random?._id || null);
+    await fetchPreview(random?._id);
+  }
 
-    if (recipients.length > 5 && !confirmed) {
-      setShowConfirm(true);
-      return;
-    }
+  async function confirmAndSend() {
     setIsSending(true);
+    setNotice(null);
     try {
       const id = (await saveDraft()) || draftId;
       if (!id) throw new Error('Save a draft before sending');
       const res = await fetch(`${API_BASE}/api/campaigns/${id}/send`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders,
         body: JSON.stringify({ confirm_bulk_send: recipients.length > 5 }),
       });
       const data = await res.json();
@@ -430,12 +510,12 @@ export default function App() {
         setNotice({ type: 'success', message: `Email sent to ${recipients.length} recipients` });
       }
       setErrors({ recipients: {} });
+      setPreviewOpen(false);
       await loadHistory();
     } catch (err) {
       setNotice({ type: 'error', message: err.message });
     } finally {
       setIsSending(false);
-      setShowConfirm(false);
     }
   }
 
@@ -456,6 +536,8 @@ export default function App() {
       setPreviewRecipientId(recs[0]?._id || null);
       setSenderName(data.sender_name || '');
       setErrors({ recipients: {} });
+      setImportedGroupId(null);
+      setImportedGroupEmails([]);
       if (data.scheduled_at) {
         setDeliveryMode('schedule');
         setScheduledAt(data.scheduled_at.slice(0, 16));
@@ -471,9 +553,135 @@ export default function App() {
     }
   }
 
-  const actionDisabled = isSending;
-  const previewDisabled = isPreviewing || !recipients.length || !subject.trim() || !stripHtml(body);
-  const actionLabel = deliveryMode === 'schedule' ? 'Schedule' : 'Send';
+  function startCreateGroup() {
+    setGroupTitle('');
+    setGroupRecipients(recipients.map(r => ({ ...r, _id: r._id || uid(), status: undefined })));
+    setGroupErrors({ recipients: {} });
+    setGroupModalOpen(true);
+  }
+
+  async function saveGroup() {
+    const { recErrors, general } = validateRecipients(groupRecipients);
+    const nextErrors = { recipients: recErrors };
+    if (!groupTitle.trim()) nextErrors.title = 'Title is required';
+    if (general) nextErrors.general = general;
+    setGroupErrors(nextErrors);
+    if (nextErrors.title || nextErrors.general || Object.keys(recErrors).length) return;
+    try {
+      const payload = {
+        title: groupTitle.trim(),
+        recipients: groupRecipients.map(sanitizeRecipient),
+      };
+      const res = await fetch(`${API_BASE}/api/groups`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to save group');
+      setNotice({ type: 'success', message: 'Group saved' });
+      setGroupModalOpen(false);
+      await loadGroups();
+    } catch (err) {
+      setNotice({ type: 'error', message: err.message });
+    }
+  }
+
+  async function openImportGroups() {
+    await loadGroups();
+    setGroupImportOpen(true);
+  }
+
+  function confirmGroupImport(group) {
+    setGroupToConfirm(group);
+  }
+
+  function applyGroupImport() {
+    if (!groupToConfirm) return;
+    const mapped = (groupToConfirm.recipients || []).map(r => ({ ...r, _id: uid(), status: 'pending' }));
+    setRecipients(mapped);
+    setPreviewRecipientId(mapped[0]?._id || null);
+    setErrors({ recipients: {} });
+    setGroupImportOpen(false);
+    setGroupToConfirm(null);
+    setImportedGroupId(groupToConfirm.id);
+    setImportedGroupEmails((groupToConfirm.recipients || []).map(r => r.email));
+    setNotice({ type: 'info', message: 'Group imported' });
+  }
+
+  async function updateImportedGroup() {
+    if (!importedGroupId) return;
+    const baseline = new Set((importedGroupEmails || []).map(e => e.toLowerCase()));
+    const extras = recipients
+      .map(sanitizeRecipient)
+      .filter(r => r.email && !baseline.has(r.email) && emailRegex.test(r.email) && r.name && r.company);
+    if (!extras.length) {
+      setNotice({ type: 'info', message: 'No new valid recipients to add' });
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/api/groups/${importedGroupId}/append`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ recipients: extras }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update group');
+      const nextEmails = [...baseline, ...extras.map(r => r.email)];
+      setImportedGroupEmails(nextEmails);
+      setPendingGroupExtras(0);
+      setNotice({ type: 'success', message: `Group updated with ${data.added || extras.length} new recipient(s)` });
+    } catch (err) {
+      setNotice({ type: 'error', message: err.message });
+    }
+  }
+
+  async function saveTemplate() {
+    if (!templateTitle.trim()) {
+      setNotice({ type: 'error', message: 'Template title is required' });
+      return;
+    }
+    if (!subject.trim() || !stripHtml(body)) {
+      setNotice({ type: 'error', message: 'Subject and body are required to save a template' });
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/api/templates`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ title: templateTitle.trim(), subject, body_html: body }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to save template');
+      setNotice({ type: 'success', message: 'Template saved' });
+      setTemplateTitle('');
+      setTemplateTitlePrompt(false);
+      await loadTemplates();
+    } catch (err) {
+      setNotice({ type: 'error', message: err.message });
+    }
+  }
+
+  async function openTemplateImport() {
+    await loadTemplates();
+    setTemplateImportOpen(true);
+  }
+
+  function confirmTemplateImport(template) {
+    setTemplateToConfirm(template);
+  }
+
+  function applyTemplateImport() {
+    if (!templateToConfirm) return;
+    setSubject(templateToConfirm.subject || '');
+    setBody(templateToConfirm.body_html || '');
+    setTemplateImportOpen(false);
+    setTemplateToConfirm(null);
+    setNotice({ type: 'info', message: 'Template imported' });
+  }
+
+  const previewButtonLabel = isPreviewing ? 'Working…' : 'Preview & Continue';
+  const previewDisabled = isPreviewing;
 
   return (
     <div className="app-shell">
@@ -548,6 +756,20 @@ export default function App() {
             )}
 
             {errors.recipientsGeneral ? <div className="error-text">{errors.recipientsGeneral}</div> : null}
+            {pendingGroupExtras > 0 ? (
+              <div className="status-banner info" style={{ position: 'static', boxShadow: 'none', marginTop: 8 }}>
+                <span>You added {pendingGroupExtras} new recipients. Add them to this group?</span>
+                <button className="text-button" onClick={updateImportedGroup}>Update Group</button>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="section">
+            <p className="section-title">Groups</p>
+            <div className="chip-toggle">
+              <button className="chip" onClick={startCreateGroup}>Create Group</button>
+              <button className="chip" onClick={openImportGroups}>Import Group</button>
+            </div>
           </div>
 
           <div className="section">
@@ -616,6 +838,17 @@ export default function App() {
       <div className="right-panel">
         <div className="content-wrapper">
           <div className="composer-shell">
+            <div className="composer-header" style={{ alignItems: 'center' }}>
+              <div>
+                <p className="eyebrow">Templates</p>
+                <span className="helper">Save or reuse subject + body</span>
+              </div>
+              <div className="chip-toggle">
+                <button className="chip" onClick={() => setTemplateTitlePrompt(true)}>Save as Template</button>
+                <button className="chip" onClick={openTemplateImport}>Import Template</button>
+              </div>
+            </div>
+
             <Editor
               subject={subject}
               setSubject={handleSubjectChange}
@@ -624,12 +857,9 @@ export default function App() {
               subjectError={errors.subject}
               bodyError={errors.body}
             />
-            <div className="button-row">
-              <button className="ghost" onClick={handlePreview} disabled={previewDisabled}>
-                {isPreviewing ? 'Working…' : 'Preview'}
-              </button>
-              <button className="primary" onClick={() => handleSend()} disabled={actionDisabled}>
-                {isSending ? (deliveryMode === 'schedule' ? 'Scheduling…' : 'Sending…') : actionLabel}
+            <div className="button-row" style={{ justifyContent: 'flex-end' }}>
+              <button className="primary" onClick={handlePreviewContinue} disabled={previewDisabled}>
+                {previewButtonLabel}
               </button>
             </div>
             {saving ? <div className="helper saving-hint">Saving…</div> : null}
@@ -640,24 +870,34 @@ export default function App() {
       <StatusBanner notice={notice} onClose={() => setNotice(null)} />
 
       <SlidePanel open={previewOpen} title="Preview" onClose={() => setPreviewOpen(false)}>
-        <div className="panel-row">
-          <label className="helper">Preview as</label>
-          <select
-            className="input-underline"
-            value={previewRecipientId || ''}
-            onChange={e => setPreviewRecipientId(e.target.value)}
-          >
-            {recipients.map(r => (
-              <option key={r._id} value={r._id}>
-                {r.name} — {r.email}
-              </option>
-            ))}
-          </select>
-          <button className="text-button" onClick={handlePreview} disabled={!recipients.length}>
-            Refresh
+        {previewRecipientMeta ? (
+          <div className="panel-row" style={{ gridTemplateColumns: '1fr auto auto' }}>
+            <div>
+              <div className="section-title">{previewRecipientMeta.name}</div>
+              <div className="helper">{previewRecipientMeta.company} • {previewRecipientMeta.email}</div>
+            </div>
+            <button
+              className="text-button"
+              onClick={() => {
+                if (!recipients.length) return;
+                const next = recipients[Math.floor(Math.random() * recipients.length)];
+                if (next?._id) fetchPreview(next._id);
+              }}
+            >
+              Shuffle recipient
+            </button>
+            <button className="text-button" onClick={() => fetchPreview(previewRecipientMeta._id)} disabled={isPreviewing}>
+              Refresh
+            </button>
+          </div>
+        ) : null}
+        <div className="preview-frame" dangerouslySetInnerHTML={{ __html: previewHtml }} />
+        <div className="button-row" style={{ marginTop: 12 }}>
+          <button className="ghost" onClick={() => setPreviewOpen(false)}>Cancel</button>
+          <button className="primary" onClick={confirmAndSend} disabled={isSending}>
+            {isSending ? 'Sending…' : 'Confirm & Send'}
           </button>
         </div>
-        <div className="preview-frame" dangerouslySetInnerHTML={{ __html: previewHtml }} />
       </SlidePanel>
 
       <SlidePanel open={historyOpen} title="History" onClose={() => setHistoryOpen(false)} width="50vw">
@@ -678,17 +918,107 @@ export default function App() {
         </div>
       </SlidePanel>
 
-      {showConfirm ? (
-        <div className="modal-backdrop">
-          <div className="modal">
-            <p>You are about to send {recipients.length} emails. This action cannot be undone.</p>
-            <div className="buttons">
-              <button className="text-button" onClick={() => setShowConfirm(false)}>Cancel</button>
-              <button className="primary" onClick={() => handleSend(true)}>Confirm &amp; Send</button>
-            </div>
-          </div>
+      <Modal open={groupModalOpen} title="Create Group" onClose={() => setGroupModalOpen(false)} width={540}>
+        <div className="section">
+          <input
+            className="input-underline"
+            placeholder="Group title"
+            value={groupTitle}
+            onChange={e => setGroupTitle(e.target.value)}
+          />
+          {groupErrors.title ? <div className="error-text">{groupErrors.title}</div> : null}
         </div>
-      ) : null}
+        <RecipientList
+          recipients={groupRecipients}
+          onChange={(idx, field, value) => {
+            setGroupRecipients(prev => {
+              const next = [...prev];
+              const current = next[idx] || {};
+              next[idx] = { ...current, [field]: value, _id: current._id || uid() };
+              return next;
+            });
+          }}
+          onDelete={idx => setGroupRecipients(prev => prev.filter((_, i) => i !== idx))}
+          onEmailBlur={idx => {
+            setGroupRecipients(prev => {
+              const next = [...prev];
+              const rec = next[idx];
+              if (!rec) return prev;
+              if (emailRegex.test(rec.email || '')) {
+                next[idx] = {
+                  ...rec,
+                  name: rec.name?.trim() ? rec.name : extractName(rec.email),
+                  company: rec.company?.trim() ? rec.company : extractCompany(rec.email),
+                };
+              }
+              return next;
+            });
+          }}
+          fieldErrors={groupErrors.recipients}
+        />
+        <button className="text-button" onClick={() => setGroupRecipients(prev => [...prev, { _id: uid(), email: '', name: '', company: '' }])}>+ Add recipient</button>
+        {groupErrors.general ? <div className="error-text">{groupErrors.general}</div> : null}
+        <div className="buttons" style={{ justifyContent: 'flex-end' }}>
+          <button className="primary" onClick={saveGroup}>Save Group</button>
+        </div>
+      </Modal>
+
+      <Modal open={groupImportOpen} title="Import Group" onClose={() => { setGroupImportOpen(false); setGroupToConfirm(null); }} width={520}>
+        <div className="history-list">
+          {groups.map(group => (
+            <button key={group.id} className="history-row" onClick={() => confirmGroupImport(group)}>
+              <div className="history-left">
+                <div className="subject-line">{group.title}</div>
+                <div className="helper">{group.recipients.length} recipients</div>
+              </div>
+              <div className="history-meta">
+                <span className="helper">Updated {new Date(group.updatedAt).toLocaleString()}</span>
+              </div>
+            </button>
+          ))}
+          {!groups.length && <div className="helper">No groups yet.</div>}
+        </div>
+        {groupToConfirm ? (
+          <div className="status-banner info" style={{ position: 'static', boxShadow: 'none', marginTop: 10 }}>
+            <span>Importing this group will reset current recipients. Continue?</span>
+            <button className="primary" onClick={applyGroupImport}>Yes, import</button>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal open={templateTitlePrompt} title="Save as Template" onClose={() => setTemplateTitlePrompt(false)} width={420}>
+        <div className="section">
+          <input
+            className="input-underline"
+            placeholder="Template title"
+            value={templateTitle}
+            onChange={e => setTemplateTitle(e.target.value)}
+          />
+        </div>
+        <div className="buttons" style={{ justifyContent: 'flex-end' }}>
+          <button className="primary" onClick={saveTemplate}>Save</button>
+        </div>
+      </Modal>
+
+      <Modal open={templateImportOpen} title="Import Template" onClose={() => { setTemplateImportOpen(false); setTemplateToConfirm(null); }} width={520}>
+        <div className="history-list">
+          {templates.map(t => (
+            <button key={t.id} className="history-row" onClick={() => confirmTemplateImport(t)}>
+              <div className="history-left">
+                <div className="subject-line">{t.title}</div>
+                <div className="helper">Last updated {new Date(t.updatedAt).toLocaleString()}</div>
+              </div>
+            </button>
+          ))}
+          {!templates.length && <div className="helper">No templates saved yet.</div>}
+        </div>
+        {templateToConfirm ? (
+          <div className="status-banner info" style={{ position: 'static', boxShadow: 'none', marginTop: 10 }}>
+            <span>Importing this template will overwrite subject and body. Continue?</span>
+            <button className="primary" onClick={applyTemplateImport}>Yes, import</button>
+          </div>
+        ) : null}
+      </Modal>
     </div>
   );
 }
