@@ -12,7 +12,7 @@ const modules = {
 
 const VARIABLE_OPTIONS = ['name', 'company'];
 
-export default function Editor({ subject, setSubject, body, setBody, subjectError, bodyError }) {
+export default function Editor({ subject, setSubject, body, setBody, subjectError, bodyError, hideSubject }) {
   const quillRef = useRef(null);
   const [slashMenu, setSlashMenu] = useState({ open: false, top: 0, left: 0 });
   const [highlightIndex, setHighlightIndex] = useState(0);
@@ -77,17 +77,20 @@ export default function Editor({ subject, setSubject, body, setBody, subjectErro
   return (
     <div className="composer">
       <div className="composer-header">
-        <p className="eyebrow">Compose</p>
-        <span className="helper">Available variables: {'{{name}}'} {'{{company}}'}</span>
+        <span className="helper-white">Variables: {'{{name}}'} {'{{company}}'} — type / in body</span>
       </div>
 
-      <input
-        className="subject-input"
-        value={subject}
-        onChange={e => setSubject(e.target.value)}
-        placeholder="Subject"
-      />
-      {subjectError ? <div className="error-text">{subjectError}</div> : null}
+      {!hideSubject && (
+        <>
+          <input
+            className="subject-input"
+            value={subject}
+            onChange={e => setSubject(e.target.value)}
+            placeholder="Subject"
+          />
+          {subjectError ? <div className="error-text">{subjectError}</div> : null}
+        </>
+      )}
 
       <div className="editor-container">
         <div className="editor-shell">
@@ -121,7 +124,7 @@ export default function Editor({ subject, setSubject, body, setBody, subjectErro
           ) : null}
         </div>
       </div>
-      {bodyError ? <div className="error-text">{bodyError}</div> : null}
+      {bodyError ? <div className="error-text" style={{ color: '#ffb3b3' }}>{bodyError}</div> : null}
     </div>
   );
 }

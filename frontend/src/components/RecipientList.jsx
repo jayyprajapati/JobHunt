@@ -2,9 +2,7 @@ import React from 'react';
 
 export default function RecipientList({ recipients, onChange, onDelete, onEmailBlur, fieldErrors }) {
   if (!recipients.length) {
-    return (
-      <div className="section muted empty-line">Recipients will appear here after parsing.</div>
-    );
+    return <p className="muted" style={{ padding: '8px 0' }}>No recipients added yet.</p>;
   }
 
   return (
@@ -15,35 +13,33 @@ export default function RecipientList({ recipients, onChange, onDelete, onEmailB
           <div className="recipient-row" key={r._id || r.email}>
             <div className="field">
               <input
-                className="input-underline"
+                className="inp"
                 value={r.email}
                 placeholder="email@example.com"
                 onChange={e => onChange(idx, 'email', e.target.value)}
                 onBlur={() => onEmailBlur(idx)}
               />
-              {errs.email ? <div className="error-text">{errs.email}</div> : null}
+              {errs.email && <small className="err">{errs.email}</small>}
             </div>
             <div className="field">
               <input
-                className="input-underline"
+                className="inp"
                 value={r.name}
                 placeholder="Name"
                 onChange={e => onChange(idx, 'name', e.target.value)}
               />
-              {errs.name ? <div className="error-text">{errs.name}</div> : null}
+              {errs.name && <small className="err">{errs.name}</small>}
             </div>
             <div className="field">
               <input
-                className="input-underline"
+                className="inp"
                 value={r.company || ''}
                 placeholder="Company"
                 onChange={e => onChange(idx, 'company', e.target.value)}
               />
-              {errs.company ? <div className="error-text">{errs.company}</div> : null}
+              {errs.company && <small className="err">{errs.company}</small>}
             </div>
-            <button className="icon-button" onClick={() => onDelete(idx)} title="Remove">
-              <span aria-hidden>✕</span>
-            </button>
+            <button className="btn-icon" onClick={() => onDelete(idx)} title="Remove">✕</button>
           </div>
         );
       })}
