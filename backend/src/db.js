@@ -12,7 +12,7 @@ function connectMongo() {
 const recipientSchema = new mongoose.Schema({
   email: { type: String, required: true, lowercase: true, trim: true },
   name: { type: String, required: true, trim: true },
-  company: { type: String, required: true, trim: true },
+  company: { type: String, default: '', trim: true },
   status: { type: String, enum: ['pending', 'sent', 'failed'], default: 'pending' },
 });
 
@@ -20,7 +20,7 @@ const groupRecipientSchema = new mongoose.Schema(
   {
     email: { type: String, required: true, lowercase: true, trim: true },
     name: { type: String, required: true, trim: true },
-    company: { type: String, required: true, trim: true },
+    company: { type: String, default: '', trim: true },
   },
   { _id: false }
 );

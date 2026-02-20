@@ -114,6 +114,33 @@ body {
   background: var(--error);
 }
 
+.dot--warn {
+  background: #f59e0b;
+}
+
+.hdr__gmail-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hdr__disconnect {
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color .15s, background .15s;
+}
+
+.hdr__disconnect:hover {
+  color: var(--error);
+  background: #fef2f2;
+}
+
 .hdr__btn {
   border: none;
   background: none;
@@ -684,6 +711,36 @@ body {
   min-height: 200px;
   font-size: 14px;
   line-height: 1.7;
+}
+
+/* ── Slash variable menu ── */
+
+.slash-menu {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .12);
+  min-width: 150px;
+  padding: 4px 0;
+}
+
+.slash-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.slash-menu button.active,
+.slash-menu button:hover {
+  background: var(--card-bg);
+  color: var(--blue);
 }
 
 /* ── Action buttons ── */

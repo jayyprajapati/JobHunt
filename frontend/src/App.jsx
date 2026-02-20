@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ReactQuill from 'react-quill';
 import RecipientList from './components/RecipientList.jsx';
 import { Mail, Users, FolderOpen, Send, Clock, History, Heart } from 'lucide-react';
@@ -15,6 +15,8 @@ const QUILL_MODULES = {
     ['link'],
   ],
 };
+
+const VARIABLE_OPTIONS = ['name', 'company'];
 
 function uid() {
   if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
@@ -65,6 +67,8 @@ export default function App() {
   const [isSending, setIsSending] = useState(false);
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isAuthed, setIsAuthed] = useState(false);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [authEmail, setAuthEmail] = useState('');
   const [senderName, setSenderName] = useState('');
   const [bulkMode, setBulkMode] = useState(false);
   const [bulkInput, setBulkInput] = useState('');
@@ -73,6 +77,11 @@ export default function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [draftId, setDraftId] = useState(null);
+
+  const quillRef = useRef(null);
+  const [slashMenu, setSlashMenu] = useState({ open: false, top: 0, left: 0 });
+  const [slashHighlight, setSlashHighlight] = useState(0);
+  const [slashTriggerIdx, setSlashTriggerIdx] = useState(null);
 
   const [groups, setGroups] = useState([]);
   const [groupDrawer, setGroupDrawer] = useState(null); // null | 'create' | group object
@@ -89,7 +98,7 @@ export default function App() {
 
   /* ── effects ── */
 
-  useEffect(() => { refreshAuth(); loadHistory(); loadGroups(); loadTemplates(); }, []);
+  useEffect(() => { refreshAuth(); loadHistory(); loadGroups(); loadTemplates(); handleAuthCallback(); }, []);
   useEffect(() => { if (!notice) return; const t = setTimeout(() => setNotice(null), 3500); return () => clearTimeout(t); }, [notice]);
 
   useEffect(() => {
@@ -102,15 +111,119 @@ export default function App() {
     const base = new Set((importedGroupEmails || []).map(e => (e || '').toLowerCase()));
     setPendingGroupExtras(recipients.filter(r => {
       const e = (r.email || '').toLowerCase();
-      return e && emailRegex.test(e) && r.name && r.company && !base.has(e);
+      return e && emailRegex.test(e) && r.name && !base.has(e);
     }).length);
   }, [recipients, importedGroupId, importedGroupEmails]);
 
   const hdrs = useMemo(() => ({ 'Content-Type': 'application/json', 'x-user-id': USER_ID }), []);
 
+  /* ── slash menu ── */
+
+  useEffect(() => {
+    const quill = quillRef.current?.getEditor();
+    if (!quill) return;
+
+    const handleKeyDown = e => {
+      if (slashMenu.open) {
+        if (['ArrowDown', 'ArrowUp', 'Enter', 'Escape'].includes(e.key)) {
+          e.preventDefault();
+        }
+        if (e.key === 'ArrowDown') {
+          setSlashHighlight(prev => (prev + 1) % VARIABLE_OPTIONS.length);
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          setSlashHighlight(prev => (prev - 1 + VARIABLE_OPTIONS.length) % VARIABLE_OPTIONS.length);
+          return;
+        }
+        if (e.key === 'Enter') {
+          insertVariable(VARIABLE_OPTIONS[slashHighlight]);
+          return;
+        }
+        if (e.key === 'Escape') {
+          closeSlashMenu();
+          return;
+        }
+        closeSlashMenu();
+        return;
+      }
+
+      if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const sel = quill.getSelection(true);
+        if (!sel) return;
+        const bounds = quill.getBounds(sel.index);
+        const rect = quill.root.getBoundingClientRect();
+        setSlashMenu({
+          open: true,
+          left: rect.left + bounds.left,
+          top: rect.top + bounds.top + bounds.height + 4,
+        });
+        setSlashTriggerIdx(sel.index);
+        setSlashHighlight(0);
+      }
+    };
+
+    quill.root.addEventListener('keydown', handleKeyDown);
+    return () => quill.root.removeEventListener('keydown', handleKeyDown);
+  }, [slashMenu.open, slashHighlight]);
+
+  function closeSlashMenu() {
+    setSlashMenu({ open: false, top: 0, left: 0 });
+    setSlashTriggerIdx(null);
+  }
+
+  function insertVariable(key) {
+    const quill = quillRef.current?.getEditor();
+    if (!quill || slashTriggerIdx === null) return;
+    const token = `{{${key}}}`;
+    quill.deleteText(slashTriggerIdx, 1);
+    quill.insertText(slashTriggerIdx, token);
+    quill.setSelection(slashTriggerIdx + token.length, 0);
+    closeSlashMenu();
+  }
+
   /* ── api helpers ── */
 
-  const refreshAuth = () => fetch(`${API_BASE}/auth/status`).then(r => r.json()).then(d => setIsAuthed(!!d.authenticated)).catch(() => setIsAuthed(false));
+  const refreshAuth = async () => {
+    setAuthChecking(true);
+    try {
+      const r = await fetch(`${API_BASE}/auth/status`);
+      const d = await r.json();
+      setIsAuthed(!!d.authenticated);
+      setAuthEmail(d.email || '');
+    } catch {
+      setIsAuthed(false);
+      setAuthEmail('');
+    } finally {
+      setAuthChecking(false);
+    }
+  };
+
+  function handleAuthCallback() {
+    const params = new URLSearchParams(window.location.search);
+    const auth = params.get('auth');
+    if (auth === 'success') {
+      setNotice({ type: 'success', message: 'Gmail connected successfully!' });
+      refreshAuth();
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (auth === 'error') {
+      const reason = params.get('reason') || 'Authorization failed';
+      setNotice({ type: 'error', message: `Gmail auth failed: ${reason}` });
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }
+
+  async function disconnectGmail() {
+    try {
+      await fetch(`${API_BASE}/auth/disconnect`, { method: 'POST' });
+      setIsAuthed(false);
+      setAuthEmail('');
+      setNotice({ type: 'info', message: 'Gmail disconnected' });
+    } catch {
+      setNotice({ type: 'error', message: 'Failed to disconnect' });
+    }
+  }
+
   const loadHistory = async () => { try { const r = await fetch(`${API_BASE}/api/campaigns`); setHistory(await r.json()); } catch { setNotice({ type: 'error', message: 'Failed to load history' }); } };
   const loadGroups = async () => { try { const r = await fetch(`${API_BASE}/api/groups`, { headers: hdrs }); const d = await r.json(); if (!r.ok) throw new Error(d.error); setGroups(d); } catch (e) { setNotice({ type: 'error', message: e.message }); } };
   const loadTemplates = async () => { try { const r = await fetch(`${API_BASE}/api/templates`, { headers: hdrs }); const d = await r.json(); if (!r.ok) throw new Error(d.error); setTemplates(d); } catch (e) { setNotice({ type: 'error', message: e.message }); } };
@@ -191,11 +304,12 @@ export default function App() {
     if (!strip(body)) e.body = 'Required';
     if (!isAuthed) e.sender = 'Connect Gmail first';
     if (!recipients.length) e.recipientsGeneral = 'Add at least one recipient';
+    const usesCompany = /\{\{\s*company\s*\}\}/i.test(body) || /\{\{\s*company\s*\}\}/i.test(subject);
     recipients.forEach(r => {
       const re = {};
       if (!emailRegex.test(r.email || '')) re.email = 'Invalid';
       if (!r.name?.trim()) re.name = 'Required';
-      if (!r.company?.trim()) re.company = 'Required';
+      if (usesCompany && !r.company?.trim()) re.company = 'Required';
       if (Object.keys(re).length) e.recipients[r._id] = re;
     });
     if (deliveryMode === 'schedule') {
@@ -250,7 +364,17 @@ export default function App() {
     try {
       const id = (await saveDraft()) || draftId; if (!id) throw new Error('Save draft first');
       const res = await fetch(`${API_BASE}/api/campaigns/${id}/send`, { method: 'POST', headers: hdrs, body: JSON.stringify({ confirm_bulk_send: recipients.length > 5 }) });
-      const d = await res.json(); if (!res.ok) throw new Error(d.error || 'Send failed');
+      const d = await res.json();
+      if (!res.ok) {
+        // If it's an auth error, refresh auth state so UI reflects reality
+        if (res.status === 401 || d.authError) {
+          setIsAuthed(false);
+          setAuthEmail('');
+          setNotice({ type: 'error', message: 'Gmail authorization expired. Please reconnect your account, then try again.' });
+          return;
+        }
+        throw new Error(d.error || 'Send failed');
+      }
       setNotice({ type: 'success', message: d.status === 'scheduled' ? `Scheduled for ${scheduledAt}` : `Sent to ${recipients.length} recipients` });
       setErrors({ recipients: {} }); setPreviewOpen(false); await loadHistory();
     } catch (e) { setNotice({ type: 'error', message: e.message }); } finally { setIsSending(false); }
@@ -320,7 +444,7 @@ export default function App() {
   function valRecs(list) {
     const recErrors = {}; let general;
     if (!list.length) general = 'Need at least one recipient';
-    list.forEach(r => { const e = {}; if (!emailRegex.test(r.email || '')) e.email = 'Invalid'; if (!r.name?.trim()) e.name = 'Required'; if (!r.company?.trim()) e.company = 'Required'; if (Object.keys(e).length) recErrors[r._id] = e; });
+    list.forEach(r => { const e = {}; if (!emailRegex.test(r.email || '')) e.email = 'Invalid'; if (!r.name?.trim()) e.name = 'Required'; if (Object.keys(e).length) recErrors[r._id] = e; });
     return { recErrors, general };
   }
 
@@ -371,10 +495,18 @@ export default function App() {
           <b className="hdr__name">Recruiter Mailer</b>
         </div>
         <div className="hdr__right">
-          <span className="hdr__gmail" onClick={() => window.location.href = `${API_BASE}/auth/google`}>
-            <i className={`dot ${isAuthed ? 'dot--ok' : 'dot--err'}`} />
-            {isAuthed ? 'Gmail Connected' : 'Connect Gmail'}
-          </span>
+          {authChecking ? (
+            <span className="hdr__gmail"><i className="dot dot--warn" /> Checking…</span>
+          ) : isAuthed ? (
+            <span className="hdr__gmail-group">
+              <span className="hdr__gmail"><i className="dot dot--ok" /> {authEmail || 'Gmail Connected'}</span>
+              <button className="hdr__disconnect" onClick={disconnectGmail}>Disconnect</button>
+            </span>
+          ) : (
+            <span className="hdr__gmail" onClick={() => window.location.href = `${API_BASE}/auth/google`}>
+              <i className="dot dot--err" /> Connect Gmail
+            </span>
+          )}
           <button className="hdr__btn" onClick={() => setHistoryOpen(true)}><History size={15} /> History</button>
         </div>
       </header>
@@ -478,8 +610,21 @@ export default function App() {
               <div className="compose__editor">
                 <p className="editor-hint">Type <b>/</b> in the editor to insert variables like {'{{name}}'} or {'{{company}}'}</p>
                 <div className="quill-wrap">
-                  <ReactQuill theme="snow" value={body} onChange={v => { setBody(v); if (errors.body && strip(v)) setErrors(p => ({ ...p, body: undefined })); }} modules={QUILL_MODULES} placeholder="Write your email…" />
+                  <ReactQuill ref={quillRef} theme="snow" value={body} onChange={v => { setBody(v); if (errors.body && strip(v)) setErrors(p => ({ ...p, body: undefined })); }} modules={QUILL_MODULES} placeholder="Write your email…" />
                 </div>
+                {slashMenu.open && (
+                  <div className="slash-menu" style={{ position: 'fixed', top: slashMenu.top, left: slashMenu.left, zIndex: 100 }}>
+                    {VARIABLE_OPTIONS.map((opt, idx) => (
+                      <button
+                        key={opt}
+                        className={idx === slashHighlight ? 'active' : ''}
+                        onMouseDown={e => { e.preventDefault(); insertVariable(opt); }}
+                      >
+                        {`{{${opt}}}`}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
               {errors.body && <span className="err--blue">{errors.body}</span>}
 
@@ -525,6 +670,7 @@ export default function App() {
             <div><b>{previewRecipientMeta.name}</b> <span className="muted">({previewRecipientMeta.company})</span></div>
             <div className="pv-meta__acts">
               <button className="link" onClick={() => { const r = recipients[Math.floor(Math.random() * recipients.length)]; if (r) { setIsPreviewing(true); fetch(`${API_BASE}/api/campaigns/${draftId}/preview`, { method: 'POST', headers: hdrs, body: JSON.stringify({ recipient_id: r._id }) }).then(x => x.json()).then(d => { setPreviewRecipientMeta(r); setPreviewHtml(d.html || ''); }).catch(e => setNotice({ type: 'error', message: e.message })).finally(() => setIsPreviewing(false)); } }}>Shuffle</button>
+              <span className="muted" style={{ fontSize: 12 }}>(Random preview)</span>
             </div>
           </div>
         )}

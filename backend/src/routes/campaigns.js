@@ -18,8 +18,12 @@ async function sendCampaign(campaignId) {
 
   const pending = campaign.recipients.filter(r => r.status === 'pending');
   if (!pending.length) {
-    return { status: campaign.status, sentCount: 0 };
+    return { status: campaign.status, sentCount: 0, failedCount: 0 };
   }
+
+  let sentCount = 0;
+  let failedCount = 0;
+  let lastError = null;
 
   if (campaign.send_mode === 'single') {
     const first = pending[0];
@@ -30,6 +34,7 @@ async function sendCampaign(campaignId) {
       const subdoc = campaign.recipients.id(r._id);
       if (subdoc) subdoc.status = 'sent';
     });
+    sentCount = pending.length;
   } else {
     for (const recipient of pending) {
       const html = renderTemplate(campaign.body_html, { name: recipient.name, company: recipient.company || '' });
@@ -37,16 +42,26 @@ async function sendCampaign(campaignId) {
         await sendMimeEmail({ to: recipient.email, subject: campaign.subject, html, senderName: campaign.sender_name });
         const subdoc = campaign.recipients.id(recipient._id);
         if (subdoc) subdoc.status = 'sent';
+        sentCount++;
       } catch (err) {
+        console.error(`[send] Failed to send to ${recipient.email}:`, err.message);
         const subdoc = campaign.recipients.id(recipient._id);
         if (subdoc) subdoc.status = 'failed';
+        failedCount++;
+        lastError = err;
       }
     }
   }
 
+  if (sentCount === 0 && lastError) {
+    campaign.status = 'draft';
+    await campaign.save();
+    throw new Error(`All emails failed: ${lastError.message}`);
+  }
+
   campaign.status = 'sent';
   await campaign.save();
-  return { status: 'sent', sentCount: pending.length };
+  return { status: 'sent', sentCount, failedCount };
 }
 
 router.post('/', async (req, res) => {
@@ -77,7 +92,7 @@ router.post('/', async (req, res) => {
       body_html,
       sender_name: sender_name || '',
       send_mode,
-      recipients: recipients.map(r => ({ email: r.email, name: r.name || 'There', company: r.company || 'Company', status: 'pending' })),
+      recipients: recipients.map(r => ({ _id: r._id || new Types.ObjectId(), email: r.email, name: r.name || 'There', company: r.company || '', status: 'pending' })),
       scheduled_at: when,
       status: initialStatus,
     });
@@ -105,7 +120,7 @@ router.patch('/:id', async (req, res) => {
         _id: r._id || new Types.ObjectId(),
         email: r.email,
         name: r.name || 'There',
-        company: r.company || 'Company',
+        company: r.company || '',
         status: r.status || 'pending',
       }));
     }
@@ -198,7 +213,10 @@ router.post('/:id/send', async (req, res) => {
     const result = await sendCampaign(id);
     return res.json(result);
   } catch (err) {
-    return res.status(500).json({ error: err.message || 'Failed to send' });
+    const isAuthErr = err.code === 'AUTH_REQUIRED' || err.code === 'AUTH_EXPIRED'
+      || /invalid_grant|Token has been expired|revoked|reconnect/i.test(err.message || '');
+    const status = isAuthErr ? 401 : 500;
+    return res.status(status).json({ error: err.message || 'Failed to send', authError: isAuthErr });
   }
 });
 

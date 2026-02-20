@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { getAuthUrl, handleAuthCode, isAuthenticated, getSenderProfile } = require('./gmail');
+const { getAuthUrl, handleAuthCode, hasTokens, verifyAuth, clearAuth, getSenderProfile } = require('./gmail');
 const recipientRoutes = require('./routes/recipients');
 const { router: campaignRoutes } = require('./routes/campaigns');
 const groupRoutes = require('./routes/groups');
@@ -24,8 +24,26 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/auth/status', (_req, res) => {
-  res.json({ authenticated: isAuthenticated(), sender: getSenderProfile() });
+app.get('/auth/status', async (_req, res) => {
+  try {
+    // Quick check first — if no tokens file at all, skip the API call
+    if (!hasTokens()) {
+      return res.json({ authenticated: false, sender: null });
+    }
+    // Actually verify tokens against Google
+    const result = await verifyAuth();
+    if (result.valid) {
+      return res.json({
+        authenticated: true,
+        sender: getSenderProfile(),
+        email: result.email,
+      });
+    }
+    // Tokens exist but are invalid — verifyAuth already cleared them
+    return res.json({ authenticated: false, sender: null, error: result.error });
+  } catch (err) {
+    return res.json({ authenticated: false, sender: null, error: err.message });
+  }
 });
 
 app.get('/auth/google', (_req, res) => {
@@ -39,13 +57,20 @@ app.get('/auth/google', (_req, res) => {
 
 app.get('/auth/google/callback', async (req, res) => {
   const code = req.query.code;
-  if (!code) return res.status(400).send('Missing code');
+  const frontendOrigin = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
+  if (!code) return res.redirect(`${frontendOrigin}?auth=error&reason=missing_code`);
   try {
     await handleAuthCode(code);
-    res.send('Authorization successful. You can return to the app.');
+    res.redirect(`${frontendOrigin}?auth=success`);
   } catch (err) {
-    res.status(500).send(err.message || 'Failed to authorize');
+    console.error('[auth] Callback error:', err.message);
+    res.redirect(`${frontendOrigin}?auth=error&reason=${encodeURIComponent(err.message)}`);
   }
+});
+
+app.post('/auth/disconnect', (_req, res) => {
+  clearAuth();
+  res.json({ ok: true });
 });
 
 app.use('/api/recipients', recipientRoutes);
