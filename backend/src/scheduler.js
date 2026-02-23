@@ -1,4 +1,4 @@
-const { Campaign } = require('./db');
+const { Campaign, User } = require('./db');
 const { sendCampaign } = require('./routes/campaigns');
 
 function startScheduler() {
@@ -12,7 +12,12 @@ function startScheduler() {
       for (const campaign of dueCampaigns) {
         try {
           console.log('[scheduler] sending campaign', campaign._id.toString(), 'scheduled for', campaign.scheduled_at);
-          await sendCampaign(campaign._id);
+          const user = await User.findById(campaign.userId);
+          if (!user) {
+            console.warn('[scheduler] user missing for campaign', campaign._id.toString());
+            continue;
+          }
+          await sendCampaign(campaign._id, user);
         } catch (err) {
           console.error('Failed to send scheduled campaign', campaign._id.toString(), err.message);
         }

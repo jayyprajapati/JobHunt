@@ -9,10 +9,40 @@ function connectMongo() {
   });
 }
 
+/* ── Schemas ── */
+
+const userSchema = new mongoose.Schema(
+  {
+    firebaseUid: { type: String, required: true, unique: true, index: true },
+    googleId: { type: String, unique: true, sparse: true },
+    email: { type: String, required: true, lowercase: true, trim: true, index: true },
+    displayName: { type: String, default: '' },
+    gmailEmail: { type: String, lowercase: true, trim: true },
+    gmailConnected: { type: Boolean, default: false },
+    encryptedRefreshToken: { type: String },
+    gmailState: { type: String },
+    gmailStateExpiresAt: { type: Date },
+  },
+  { timestamps: true, versionKey: false }
+);
+
+const variableSchema = new mongoose.Schema(
+  {
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    key: { type: String, required: true, lowercase: true, trim: true },
+    label: { type: String, required: true, trim: true },
+    required: { type: Boolean, default: false },
+    description: { type: String, default: '', trim: true },
+  },
+  { timestamps: true, versionKey: false }
+);
+
+variableSchema.index({ userId: 1, key: 1 }, { unique: true });
+
 const recipientSchema = new mongoose.Schema({
   email: { type: String, required: true, lowercase: true, trim: true },
   name: { type: String, required: true, trim: true },
-  company: { type: String, default: '', trim: true },
+  variables: { type: Map, of: String, default: {} },
   status: { type: String, enum: ['pending', 'sent', 'failed'], default: 'pending' },
 });
 
@@ -20,13 +50,14 @@ const groupRecipientSchema = new mongoose.Schema(
   {
     email: { type: String, required: true, lowercase: true, trim: true },
     name: { type: String, required: true, trim: true },
-    company: { type: String, default: '', trim: true },
+    variables: { type: Map, of: String, default: {} },
   },
   { _id: false }
 );
 
 const campaignSchema = new mongoose.Schema(
   {
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     subject: { type: String, required: true, trim: true },
     body_html: { type: String, required: true },
     sender_name: { type: String, default: '' },
@@ -42,12 +73,19 @@ const campaignSchema = new mongoose.Schema(
 );
 
 campaignSchema.index({ status: 1, scheduled_at: 1 });
+campaignSchema.index({ userId: 1, created_at: -1 });
 
-const Campaign = mongoose.model('Campaign', campaignSchema);
+const sendLogSchema = new mongoose.Schema(
+  {
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    sentAt: { type: Date, default: Date.now, index: true },
+  },
+  { versionKey: false }
+);
 
 const groupSchema = new mongoose.Schema(
   {
-    userId: { type: String, required: true, index: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     title: { type: String, required: true, trim: true },
     recipients: { type: [groupRecipientSchema], default: [] },
   },
@@ -59,7 +97,7 @@ const groupSchema = new mongoose.Schema(
 
 const templateSchema = new mongoose.Schema(
   {
-    userId: { type: String, required: true, index: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     title: { type: String, required: true, trim: true },
     subject: { type: String, required: true, trim: true },
     body_html: { type: String, required: true },
@@ -70,12 +108,19 @@ const templateSchema = new mongoose.Schema(
   }
 );
 
+const User = mongoose.model('User', userSchema);
+const Variable = mongoose.model('Variable', variableSchema);
+const Campaign = mongoose.model('Campaign', campaignSchema);
+const SendLog = mongoose.model('SendLog', sendLogSchema);
 const Group = mongoose.model('Group', groupSchema);
 const Template = mongoose.model('Template', templateSchema);
 
 module.exports = {
   connectMongo,
+  User,
+  Variable,
   Campaign,
+  SendLog,
   Group,
   Template,
 };

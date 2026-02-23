@@ -10,7 +10,7 @@ const modules = {
   ],
 };
 
-const VARIABLE_OPTIONS = ['name', 'company'];
+const VARIABLE_OPTIONS = ['name'];
 
 export default function Editor({ subject, setSubject, body, setBody, subjectError, bodyError, hideSubject }) {
   const quillRef = useRef(null);
@@ -77,7 +77,7 @@ export default function Editor({ subject, setSubject, body, setBody, subjectErro
   return (
     <div className="composer">
       <div className="composer-header">
-        <span className="helper-white">Variables: {'{{name}}'} {'{{company}}'} — type / in body</span>
+        <span className="helper-white">Variables: {'{{name}}'} — type / in body</span>
       </div>
 
       {!hideSubject && (

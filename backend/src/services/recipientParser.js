@@ -14,12 +14,6 @@ function extractName(email) {
   return name.length ? name : 'There';
 }
 
-function extractCompany(email) {
-  const domain = (email.split('@')[1] || '').split('.')[0] || '';
-  if (!domain) return 'Company';
-  return toTitle(domain);
-}
-
 function parseRecipients(rawInput) {
   if (!rawInput) return [];
   const tokens = rawInput
@@ -35,7 +29,7 @@ function parseRecipients(rawInput) {
     const email = token.toLowerCase();
     if (seen.has(email)) continue;
     seen.add(email);
-    recipients.push({ email, name: extractName(email), company: extractCompany(email) });
+    recipients.push({ email, name: extractName(email), variables: {} });
   }
   return recipients;
 }
@@ -43,5 +37,4 @@ function parseRecipients(rawInput) {
 module.exports = {
   parseRecipients,
   extractName,
-  extractCompany,
 };

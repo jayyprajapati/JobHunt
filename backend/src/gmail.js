@@ -1,29 +1,8 @@
-const fs = require('fs');
-const path = require('path');
 const { google } = require('googleapis');
 const { resolveSenderIdentity, resolveDisplayName } = require('./services/senderResolver');
+const { User } = require('./db');
+const { encrypt, decrypt } = require('./utils/crypto');
 require('dotenv').config();
-
-const dataDir = path.join(__dirname, '..', 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
-}
-const TOKEN_PATH = path.join(dataDir, 'tokens.json');
-
-/* ── persistent state read/write ── */
-
-function readAuthState() {
-  try {
-    const raw = fs.readFileSync(TOKEN_PATH, 'utf8');
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-function writeAuthState(state) {
-  fs.writeFileSync(TOKEN_PATH, JSON.stringify(state, null, 2));
-}
 
 function getOAuthClient() {
   const clientId = process.env.GOOGLE_CLIENT_ID;
@@ -35,162 +14,83 @@ function getOAuthClient() {
   return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
 }
 
-function loadTokens() {
-  const state = readAuthState();
-  if (!state) return null;
-  if (state.tokens) return state.tokens;
-  // backward compatibility: flat token object (legacy format)
-  if (state.access_token || state.refresh_token) return state;
-  return null;
-}
-
-function loadSenderIdentity() {
-  const state = readAuthState();
-  return state?.identity || null;
-}
-
-function saveTokens(tokens) {
-  const existing = readAuthState() || {};
-  // always store under .tokens — strip legacy flat keys
-  const { access_token, refresh_token, scope, token_type, expiry_date, refresh_token_expires_in, ...rest } = existing;
-  const nextState = { ...rest, tokens };
-  writeAuthState(nextState);
-}
-
-function saveSenderIdentity(identity) {
-  const existing = readAuthState() || {};
-  const nextState = { ...existing, identity };
-  writeAuthState(nextState);
-}
-
-function clearAuth() {
-  try { fs.unlinkSync(TOKEN_PATH); } catch { /* already gone */ }
-  console.log('[gmail] Auth state cleared — tokens removed');
-}
-
-/* ── quick auth checks ── */
-
-function hasTokens() {
-  return !!loadTokens();
-}
-
-function getSenderProfile() {
-  return loadSenderIdentity();
-}
-
-/**
- * Verify stored tokens by calling sendAs.list (works with gmail.settings.basic scope).
- * Returns { valid, email, displayName } — if tokens are dead, auto-clears them.
- */
-async function verifyAuth() {
-  const tokens = loadTokens();
-  if (!tokens) return { valid: false };
-
-  const oAuth2Client = getOAuthClient();
-  oAuth2Client.setCredentials(tokens);
-
-  // persist any refreshed tokens
-  oAuth2Client.on('tokens', (newTokens) => {
-    const current = loadTokens() || {};
-    saveTokens({ ...current, ...newTokens });
-    console.log('[gmail] Token refreshed and saved');
-  });
-
-  try {
-    const gmail = google.gmail({ version: 'v1', auth: oAuth2Client });
-    // Use sendAs.list — it only needs gmail.settings.basic which we already request
-    const res = await gmail.users.settings.sendAs.list({ userId: 'me' });
-    const sendAsList = res?.data?.sendAs || [];
-    const primary = sendAsList.find(sa => sa.isPrimary) || sendAsList[0];
-    const email = primary?.sendAsEmail || '';
-    const displayName = primary?.displayName || '';
-
-    // Cache identity if we got it
-    if (email) {
-      saveSenderIdentity({
-        sendAsEmail: email,
-        gmailDisplayName: displayName,
-        fetchedAt: new Date().toISOString(),
-      });
-    }
-
-    return { valid: true, email, displayName };
-  } catch (err) {
-    const errBody = err?.response?.data?.error;
-    const errMsg = errBody?.message || err.message || '';
-    const errStatus = errBody?.status || '';
-    console.error('[gmail] Token verification failed:', errMsg);
-
-    // Only clear tokens for actual auth failures, not scope/permission issues
-    if (/invalid_grant|invalid_client|Token has been expired|revoked/i.test(errMsg)) {
-      clearAuth();
-      return { valid: false, error: errMsg };
-    }
-
-    // For other errors (network, transient), don't nuke tokens — just report
-    return { valid: false, error: errMsg };
-  }
-}
-
-/* ── auth flow ── */
-
-function getAuthUrl() {
+function getAuthUrl({ state, prompt = 'consent' }) {
   const oAuth2Client = getOAuthClient();
   return oAuth2Client.generateAuthUrl({
     access_type: 'offline',
+    prompt,
     scope: [
       'https://www.googleapis.com/auth/gmail.send',
-      'https://www.googleapis.com/auth/gmail.settings.basic',
     ],
-    prompt: 'consent',
+    state,
   });
 }
 
-async function handleAuthCode(code) {
+async function exchangeCodeForUser(user, code) {
   const oAuth2Client = getOAuthClient();
   const { tokens } = await oAuth2Client.getToken(code);
-  oAuth2Client.setCredentials(tokens);
-  saveTokens(tokens);
+  const incomingRefresh = tokens?.refresh_token;
+  if (!incomingRefresh && !user.encryptedRefreshToken) {
+    throw new Error('No refresh token returned. Please remove app access in Google and try again.');
+  }
+  const refreshToken = incomingRefresh || decrypt(user.encryptedRefreshToken);
+  oAuth2Client.setCredentials({ refresh_token: refreshToken });
 
-  // Fetch and cache primary send-as identity right after auth
-  try {
-    const identity = await resolveSenderIdentity({
-      auth: oAuth2Client,
-      getCachedIdentity: () => null, // force fresh fetch
-      saveIdentity: saveSenderIdentity,
-    });
-    saveSenderIdentity({
-      sendAsEmail: identity.sendAsEmail,
-      gmailDisplayName: identity.gmailDisplayName,
-      fetchedAt: new Date().toISOString(),
-    });
-  } catch (err) {
-    console.warn('Failed to fetch sender identity after auth:', err.message);
+  const gmail = google.gmail({ version: 'v1', auth: oAuth2Client });
+  const { data: profile } = await gmail.users.getProfile({ userId: 'me' });
+  if (!profile?.emailAddress) {
+    throw new Error('Failed to read Gmail profile');
   }
 
-  return tokens;
+  const encryptedRefreshToken = incomingRefresh ? encrypt(incomingRefresh) : user.encryptedRefreshToken;
+
+  user.googleId = profile.emailAddress;
+  user.gmailEmail = profile.emailAddress.toLowerCase();
+  user.email = user.email || profile.emailAddress.toLowerCase();
+  user.displayName = user.displayName || profile.emailAddress;
+  user.encryptedRefreshToken = encryptedRefreshToken;
+  user.gmailConnected = true;
+  await user.save();
+
+  return user;
 }
 
-/* ── authorized client ── */
-
-function getAuthorizedClient() {
-  const oAuth2Client = getOAuthClient();
-  const tokens = loadTokens();
-  if (!tokens) {
-    const err = new Error('Not authorized with Google. Please reconnect your Gmail account.');
+async function getAuthorizedClient(user) {
+  if (!user || !user.encryptedRefreshToken) {
+    const err = new Error('Missing Gmail authorization. Please reconnect your Gmail account.');
     err.code = 'AUTH_REQUIRED';
     throw err;
   }
-  oAuth2Client.setCredentials(tokens);
-  oAuth2Client.on('tokens', (newTokens) => {
-    const current = loadTokens() || {};
-    saveTokens({ ...current, ...newTokens });
-    console.log('[gmail] Token auto-refreshed and saved');
-  });
+
+  const refreshToken = decrypt(user.encryptedRefreshToken);
+  if (!refreshToken) {
+    const err = new Error('Missing Gmail authorization. Please reconnect your Gmail account.');
+    err.code = 'AUTH_REQUIRED';
+    throw err;
+  }
+
+  const oAuth2Client = getOAuthClient();
+  oAuth2Client.setCredentials({ refresh_token: refreshToken });
   return oAuth2Client;
 }
 
-/* ── email sending ── */
+async function verifyAuth(user) {
+  try {
+    if (!user) return { valid: false };
+    const auth = await getAuthorizedClient(user);
+    const gmail = google.gmail({ version: 'v1', auth });
+    const res = await gmail.users.getProfile({ userId: 'me' });
+    const primaryEmail = res?.data?.emailAddress || user.email;
+    return {
+      valid: !!primaryEmail,
+      email: primaryEmail,
+      displayName: user.displayName,
+    };
+  } catch (err) {
+    const errMsg = err?.response?.data?.error?.message || err.message || '';
+    return { valid: false, error: errMsg };
+  }
+}
 
 function toBase64Url(str) {
   return Buffer.from(str)
@@ -200,38 +100,21 @@ function toBase64Url(str) {
     .replace(/=+$/, '');
 }
 
-async function sendMimeEmail({ to, subject, html, senderName }) {
-  let auth;
-  try {
-    auth = getAuthorizedClient();
-  } catch (err) {
-    if (err.code === 'AUTH_REQUIRED') clearAuth();
-    throw err;
-  }
-
+async function sendMimeEmail({ user, to, subject, html, senderName }) {
+  const auth = await getAuthorizedClient(user);
   const gmail = google.gmail({ version: 'v1', auth });
 
-  let identity;
-  try {
-    identity = await resolveSenderIdentity({
-      auth,
-      customSenderName: senderName,
-      getCachedIdentity: loadSenderIdentity,
-      saveIdentity: saveSenderIdentity,
-    });
-  } catch (err) {
-    // If identity fetch fails due to auth, clear and rethrow
-    if (/invalid_grant|Token has been expired|revoked/i.test(err.message || '')) {
-      clearAuth();
-      const authErr = new Error('Gmail authorization expired. Please reconnect your account.');
-      authErr.code = 'AUTH_EXPIRED';
-      throw authErr;
-    }
-    throw err;
-  }
+  const identity = await resolveSenderIdentity({
+    auth,
+    customSenderName: senderName,
+    getCachedIdentity: null,
+    saveIdentity: null,
+  });
 
   if (!identity?.sendAsEmail) {
-    throw new Error('Sender identity could not be resolved');
+    const err = new Error('Sender identity could not be resolved');
+    err.code = 'SENDER_UNAVAILABLE';
+    throw err;
   }
 
   const displayName = resolveDisplayName(
@@ -261,10 +144,8 @@ async function sendMimeEmail({ to, subject, html, senderName }) {
     });
     console.log(`[gmail] Sent to ${toHeader}, messageId: ${result.data?.id}`);
   } catch (err) {
-    // Handle auth errors during actual send
     const errMsg = err?.response?.data?.error?.message || err.message || '';
     if (/invalid_grant|Token has been expired|revoked/i.test(errMsg)) {
-      clearAuth();
       const authErr = new Error('Gmail authorization expired. Please reconnect your account.');
       authErr.code = 'AUTH_EXPIRED';
       throw authErr;
@@ -275,13 +156,8 @@ async function sendMimeEmail({ to, subject, html, senderName }) {
 
 module.exports = {
   getAuthUrl,
-  handleAuthCode,
-  hasTokens,
+  exchangeCodeForUser,
   verifyAuth,
-  clearAuth,
-  getSenderProfile,
   getAuthorizedClient,
-  loadSenderIdentity,
-  saveSenderIdentity,
   sendMimeEmail,
 };

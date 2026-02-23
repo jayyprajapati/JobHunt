@@ -1,11 +1,22 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import ReactQuill from 'react-quill';
+import ReactQuill, { Quill } from 'react-quill';
 import RecipientList from './components/RecipientList.jsx';
 import { Mail, Users, FolderOpen, Send, Clock, History, Heart } from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000';
-const USER_ID = 'demo-user';
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const firebaseAuth = getAuth(firebaseApp);
+const provider = new GoogleAuthProvider();
 
 const QUILL_MODULES = {
   toolbar: [
@@ -16,7 +27,27 @@ const QUILL_MODULES = {
   ],
 };
 
-const VARIABLE_OPTIONS = ['name', 'company'];
+const VARIABLE_OPTIONS = ['name'];
+
+const Embed = Quill.import('blots/embed');
+class VariableBlot extends Embed {
+  static create(value) {
+    const node = super.create();
+    node.setAttribute('data-key', value);
+    node.setAttribute('contenteditable', 'false');
+    node.classList.add('var-token');
+    node.innerText = `{{${value}}}`;
+    return node;
+  }
+
+  static value(node) {
+    return node.getAttribute('data-key');
+  }
+}
+VariableBlot.blotName = 'variable';
+VariableBlot.tagName = 'span';
+VariableBlot.className = 'var-token';
+Quill.register(VariableBlot);
 
 function uid() {
   if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
@@ -66,9 +97,11 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [isPreviewing, setIsPreviewing] = useState(false);
-  const [isAuthed, setIsAuthed] = useState(false);
-  const [authChecking, setAuthChecking] = useState(true);
-  const [authEmail, setAuthEmail] = useState('');
+  const [appUser, setAppUser] = useState(null);
+  const [idToken, setIdToken] = useState('');
+  const [authLoading, setAuthLoading] = useState(true);
+  const [gmailConnected, setGmailConnected] = useState(false);
+  const [gmailEmail, setGmailEmail] = useState('');
   const [senderName, setSenderName] = useState('');
   const [bulkMode, setBulkMode] = useState(false);
   const [bulkInput, setBulkInput] = useState('');
@@ -82,6 +115,11 @@ export default function App() {
   const [slashMenu, setSlashMenu] = useState({ open: false, top: 0, left: 0 });
   const [slashHighlight, setSlashHighlight] = useState(0);
   const [slashTriggerIdx, setSlashTriggerIdx] = useState(null);
+
+  const [variables, setVariables] = useState([]);
+  const [varForm, setVarForm] = useState({ key: '', label: '', required: false, description: '' });
+
+  const variableKeys = useMemo(() => ['name', ...variables.map(v => v.key)], [variables]);
 
   const [groups, setGroups] = useState([]);
   const [groupDrawer, setGroupDrawer] = useState(null); // null | 'create' | group object
@@ -98,7 +136,42 @@ export default function App() {
 
   /* ── effects ── */
 
-  useEffect(() => { refreshAuth(); loadHistory(); loadGroups(); loadTemplates(); handleAuthCallback(); }, []);
+  useEffect(() => {
+    const unsub = onAuthStateChanged(firebaseAuth, async user => {
+      setAuthLoading(false);
+      if (user) {
+        const token = await user.getIdToken();
+        setIdToken(token);
+        setAppUser({ email: user.email, displayName: user.displayName, firebaseUid: user.uid });
+        await hydrateProfile(token);
+        loadVariables(token);
+        loadHistory(token);
+        loadGroups(token);
+        loadTemplates(token);
+      } else {
+        setAppUser(null);
+        setIdToken('');
+        setGmailConnected(false);
+        setGmailEmail('');
+        setRecipients([]);
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const gmail = params.get('gmail');
+    if (gmail === 'success') {
+      setNotice({ type: 'success', message: 'Gmail connected!' });
+      hydrateProfile();
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (gmail === 'error') {
+      const reason = params.get('reason') || 'Authorization failed';
+      setNotice({ type: 'error', message: `Gmail auth failed: ${reason}` });
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
   useEffect(() => { if (!notice) return; const t = setTimeout(() => setNotice(null), 3500); return () => clearTimeout(t); }, [notice]);
 
   useEffect(() => {
@@ -115,7 +188,7 @@ export default function App() {
     }).length);
   }, [recipients, importedGroupId, importedGroupEmails]);
 
-  const hdrs = useMemo(() => ({ 'Content-Type': 'application/json', 'x-user-id': USER_ID }), []);
+  const hdrs = useMemo(() => ({ 'Content-Type': 'application/json' }), []);
 
   /* ── slash menu ── */
 
@@ -129,15 +202,15 @@ export default function App() {
           e.preventDefault();
         }
         if (e.key === 'ArrowDown') {
-          setSlashHighlight(prev => (prev + 1) % VARIABLE_OPTIONS.length);
+          setSlashHighlight(prev => (prev + 1) % Math.max(variableKeys.length, 1));
           return;
         }
         if (e.key === 'ArrowUp') {
-          setSlashHighlight(prev => (prev - 1 + VARIABLE_OPTIONS.length) % VARIABLE_OPTIONS.length);
+          setSlashHighlight(prev => (prev - 1 + Math.max(variableKeys.length, 1)) % Math.max(variableKeys.length, 1));
           return;
         }
         if (e.key === 'Enter') {
-          insertVariable(VARIABLE_OPTIONS[slashHighlight]);
+          insertVariable(variableKeys[slashHighlight] || 'name');
           return;
         }
         if (e.key === 'Escape') {
@@ -165,7 +238,7 @@ export default function App() {
 
     quill.root.addEventListener('keydown', handleKeyDown);
     return () => quill.root.removeEventListener('keydown', handleKeyDown);
-  }, [slashMenu.open, slashHighlight]);
+  }, [slashMenu.open, slashHighlight, variableKeys]);
 
   function closeSlashMenu() {
     setSlashMenu({ open: false, top: 0, left: 0 });
@@ -175,66 +248,113 @@ export default function App() {
   function insertVariable(key) {
     const quill = quillRef.current?.getEditor();
     if (!quill || slashTriggerIdx === null) return;
-    const token = `{{${key}}}`;
     quill.deleteText(slashTriggerIdx, 1);
-    quill.insertText(slashTriggerIdx, token);
-    quill.setSelection(slashTriggerIdx + token.length, 0);
+    quill.insertEmbed(slashTriggerIdx, 'variable', key);
+    quill.insertText(slashTriggerIdx + 1, ' ');
+    quill.setSelection(slashTriggerIdx + 2, 0);
     closeSlashMenu();
+  }
+
+  async function apiFetch(url, options = {}) {
+    const headers = { ...hdrs, ...(options.headers || {}) };
+    if (!idToken) throw new Error('Not authenticated');
+    headers.Authorization = `Bearer ${idToken}`;
+    return fetch(url, { ...options, headers });
   }
 
   /* ── api helpers ── */
 
-  const refreshAuth = async () => {
-    setAuthChecking(true);
+  const hydrateProfile = async (tokenOverride) => {
+    const tok = tokenOverride || idToken;
+    if (!tok) return;
     try {
-      const r = await fetch(`${API_BASE}/auth/status`);
+      const r = await fetch(`${API_BASE}/auth/me`, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` } });
       const d = await r.json();
-      setIsAuthed(!!d.authenticated);
-      setAuthEmail(d.email || '');
-    } catch {
-      setIsAuthed(false);
-      setAuthEmail('');
-    } finally {
-      setAuthChecking(false);
+      if (!r.ok) throw new Error(d.error || 'Failed to load profile');
+      setGmailConnected(!!d.gmailConnected);
+      setGmailEmail(d.gmailEmail || d.user?.email || '');
+      setAppUser(prev => prev || { email: d.user?.email, displayName: d.user?.displayName, firebaseUid: d.user?.firebaseUid });
+    } catch (err) {
+      setGmailConnected(false);
+      setNotice({ type: 'error', message: err.message });
     }
   };
 
-  function handleAuthCallback() {
-    const params = new URLSearchParams(window.location.search);
-    const auth = params.get('auth');
-    if (auth === 'success') {
-      setNotice({ type: 'success', message: 'Gmail connected successfully!' });
-      refreshAuth();
-      window.history.replaceState({}, '', window.location.pathname);
-    } else if (auth === 'error') {
-      const reason = params.get('reason') || 'Authorization failed';
-      setNotice({ type: 'error', message: `Gmail auth failed: ${reason}` });
-      window.history.replaceState({}, '', window.location.pathname);
-    }
-  }
-
   async function disconnectGmail() {
     try {
-      await fetch(`${API_BASE}/auth/disconnect`, { method: 'POST' });
-      setIsAuthed(false);
-      setAuthEmail('');
+      const res = await authedFetch(`${API_BASE}/gmail/disconnect`, { method: 'POST' });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || 'Failed to disconnect');
+      setGmailConnected(false);
+      setGmailEmail('');
       setNotice({ type: 'info', message: 'Gmail disconnected' });
-    } catch {
-      setNotice({ type: 'error', message: 'Failed to disconnect' });
+    } catch (e) {
+      setNotice({ type: 'error', message: e.message || 'Failed to disconnect' });
     }
   }
 
-  const loadHistory = async () => { try { const r = await fetch(`${API_BASE}/api/campaigns`); setHistory(await r.json()); } catch { setNotice({ type: 'error', message: 'Failed to load history' }); } };
-  const loadGroups = async () => { try { const r = await fetch(`${API_BASE}/api/groups`, { headers: hdrs }); const d = await r.json(); if (!r.ok) throw new Error(d.error); setGroups(d); } catch (e) { setNotice({ type: 'error', message: e.message }); } };
-  const loadTemplates = async () => { try { const r = await fetch(`${API_BASE}/api/templates`, { headers: hdrs }); const d = await r.json(); if (!r.ok) throw new Error(d.error); setTemplates(d); } catch (e) { setNotice({ type: 'error', message: e.message }); } };
+  async function connectGmail() {
+    try {
+      const res = await authedFetch(`${API_BASE}/gmail/connect`, { method: 'POST' });
+      const d = await res.json();
+      if (!res.ok || !d.url) throw new Error(d.error || 'Failed to start Gmail connect');
+      window.location.href = d.url;
+    } catch (e) {
+      setNotice({ type: 'error', message: e.message || 'Failed to start Gmail connect' });
+    }
+  }
+
+  async function login() {
+    try {
+      await signInWithPopup(firebaseAuth, provider);
+    } catch (e) {
+      setNotice({ type: 'error', message: e.message || 'Login failed' });
+    }
+  }
+
+  async function logout() {
+    await signOut(firebaseAuth);
+    setAppUser(null);
+    setIdToken('');
+    setGmailConnected(false);
+    setGmailEmail('');
+    setRecipients([]);
+    setHistory([]);
+  }
+
+  const authedFetch = async (url, options = {}, tokenOverride) => {
+    const tok = tokenOverride || idToken;
+    if (!tok) throw new Error('Not authenticated');
+    return fetch(url, { ...options, headers: { ...hdrs, ...(options.headers || {}), Authorization: `Bearer ${tok}` } });
+  };
+
+  const loadHistory = async (tok) => { try { const r = await authedFetch(`${API_BASE}/api/campaigns`, {}, tok); const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Failed'); setHistory(d); } catch (e) { setNotice({ type: 'error', message: e.message || 'Failed to load history' }); } };
+  const loadGroups = async (tok) => { try { const r = await authedFetch(`${API_BASE}/api/groups`, {}, tok); const d = await r.json(); if (!r.ok) throw new Error(d.error); setGroups(d); } catch (e) { setNotice({ type: 'error', message: e.message }); } };
+  const loadTemplates = async (tok) => { try { const r = await authedFetch(`${API_BASE}/api/templates`, {}, tok); const d = await r.json(); if (!r.ok) throw new Error(d.error); setTemplates(d); } catch (e) { setNotice({ type: 'error', message: e.message }); } };
+  const loadVariables = async (tok) => { try { const r = await authedFetch(`${API_BASE}/api/variables`, {}, tok); const d = await r.json(); if (!r.ok) throw new Error(d.error); setVariables(d); } catch (e) { setNotice({ type: 'error', message: e.message }); } };
 
   /* ── helpers ── */
 
   const strip = h => (h || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   const cap = w => w ? w[0].toUpperCase() + w.slice(1).toLowerCase() : '';
   const nameFrom = e => { const p = (e || '').split('@')[0].replace(/[0-9]/g, '').split(/[._-]+/).filter(Boolean); return p.length ? p.map(cap).join(' ') : 'There'; };
-  const compFrom = e => { const d = (e || '').split('@')[1] || ''; return cap(d.split('.')[0]) || 'Company'; };
-  const san = r => ({ ...r, email: (r.email || '').toLowerCase().trim(), name: (r.name || '').trim(), company: (r.company || '').trim(), _id: r._id || uid(), status: r.status || 'pending' });
+  const san = r => ({ ...r, email: (r.email || '').toLowerCase().trim(), name: (r.name || '').trim(), variables: { ...(r.variables || {}) }, _id: r._id || uid(), status: r.status || 'pending' });
+
+  const VAR_REGEX = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
+  const findVars = html => {
+    const normalized = (html || '').replace(VAR_REGEX, (_m, v) => `{{${String(v || '').toLowerCase()}}}`);
+    const found = new Set();
+    let m;
+    while ((m = VAR_REGEX.exec(normalized)) !== null) {
+      found.add(m[1].toLowerCase());
+    }
+    return Array.from(found);
+  };
+  const hasUnmatched = html => {
+    const open = (html.match(/\{\{/g) || []).length;
+    const close = (html.match(/\}\}/g) || []).length;
+    return open !== close;
+  };
 
   function parseBulk(raw) {
     if (!raw) return [];
@@ -244,7 +364,7 @@ export default function App() {
       const e = t.toLowerCase();
       if (seen.has(e)) continue;
       seen.add(e);
-      list.push({ email: e, name: nameFrom(e), company: compFrom(e), _id: uid(), status: 'pending' });
+      list.push({ email: e, name: nameFrom(e), variables: {}, _id: uid(), status: 'pending' });
     }
     return list;
   }
@@ -264,6 +384,21 @@ export default function App() {
     });
   }
 
+  function updateRecipientVariable(idx, key, value) {
+    setRecipients(prev => {
+      const next = [...prev];
+      const target = next[idx];
+      if (!target) return prev;
+      const nextVars = { ...(target.variables || {}), [key]: value };
+      next[idx] = { ...target, variables: nextVars };
+      const id = next[idx]._id;
+      if (errors.recipients?.[id]?.[key] && value) {
+        setErrors(p => { const u = { ...p.recipients }; const x = { ...(u[id] || {}) }; delete x[key]; u[id] = x; return { ...p, recipients: u }; });
+      }
+      return next;
+    });
+  }
+
   function deleteRecipient(idx) {
     setRecipients(prev => {
       const rm = prev[idx];
@@ -273,7 +408,7 @@ export default function App() {
   }
 
   function addRow() {
-    setRecipients(p => [...p, { _id: uid(), email: '', name: '', company: '', status: 'pending' }]);
+    setRecipients(p => [...p, { _id: uid(), email: '', name: '', variables: {}, status: 'pending' }]);
     if (errors.recipientsGeneral) setErrors(p => ({ ...p, recipientsGeneral: undefined }));
   }
 
@@ -281,7 +416,7 @@ export default function App() {
     setRecipients(prev => {
       const next = [...prev], r = next[idx];
       if (!r || !emailRegex.test(r.email || '')) return prev;
-      next[idx] = { ...r, name: r.name?.trim() ? r.name : nameFrom(r.email), company: r.company?.trim() ? r.company : compFrom(r.email) };
+      next[idx] = { ...r, name: r.name?.trim() ? r.name : nameFrom(r.email) };
       return next;
     });
   }
@@ -302,14 +437,25 @@ export default function App() {
     const e = { recipients: {} };
     if (!subject.trim()) e.subject = 'Required';
     if (!strip(body)) e.body = 'Required';
-    if (!isAuthed) e.sender = 'Connect Gmail first';
+    if (!appUser) e.sender = 'Login required';
+    else if (!gmailConnected) e.sender = 'Connect Gmail first';
     if (!recipients.length) e.recipientsGeneral = 'Add at least one recipient';
-    const usesCompany = /\{\{\s*company\s*\}\}/i.test(body) || /\{\{\s*company\s*\}\}/i.test(subject);
+    if (recipients.length > 50) e.recipientsGeneral = 'Max 50 recipients per send';
+
+    const usedVars = new Set([...findVars(subject), ...findVars(body)]);
+    const allowedKeys = ['name', ...variables.map(v => v.key)];
+    if (hasUnmatched(body)) {
+      e.body = 'Invalid variable syntax detected.';
+    }
+
+    const requiredKeys = variables.filter(v => v.required && usedVars.has(v.key)).map(v => v.key);
     recipients.forEach(r => {
       const re = {};
       if (!emailRegex.test(r.email || '')) re.email = 'Invalid';
       if (!r.name?.trim()) re.name = 'Required';
-      if (usesCompany && !r.company?.trim()) re.company = 'Required';
+      requiredKeys.forEach(k => {
+        if (!r.variables?.[k]) re[k] = 'Required';
+      });
       if (Object.keys(re).length) e.recipients[r._id] = re;
     });
     if (deliveryMode === 'schedule') {
@@ -337,8 +483,8 @@ export default function App() {
     setSaving(true);
     try {
       let res;
-      if (draftId) { res = await fetch(`${API_BASE}/api/campaigns/${draftId}`, { method: 'PATCH', headers: hdrs, body: JSON.stringify(p) }); }
-      else { res = await fetch(`${API_BASE}/api/campaigns`, { method: 'POST', headers: hdrs, body: JSON.stringify(p) }); }
+      if (draftId) { res = await apiFetch(`${API_BASE}/api/campaigns/${draftId}`, { method: 'PATCH', headers: hdrs, body: JSON.stringify(p) }); }
+      else { res = await apiFetch(`${API_BASE}/api/campaigns`, { method: 'POST', headers: hdrs, body: JSON.stringify(p) }); }
       const d = await res.json(); if (!res.ok) throw new Error(d.error || 'Save failed');
       if (!draftId && d.id) setDraftId(d.id);
       if (toast) setNotice({ type: 'info', message: 'Draft saved' });
@@ -347,29 +493,35 @@ export default function App() {
   }
 
   async function doPreview() {
+    const unknownVars = [...findVars(subject), ...findVars(body)].filter(k => !variableKeys.includes(k));
+    if (hasUnmatched(body) || hasUnmatched(subject)) { setNotice({ type: 'error', message: 'Invalid variable syntax detected.' }); return; }
+    if (unknownVars.length) { setNotice({ type: 'info', message: `Unknown variable {{${unknownVars[0]}}} found.` }); }
     const ve = validate(); setErrors(ve); if (hasErr(ve)) return;
     setIsPreviewing(true);
     try {
       const id = (await saveDraft()) || draftId; if (!id) throw new Error('Save draft first');
       const tgt = recipients[Math.floor(Math.random() * recipients.length)];
       setPreviewRecipientId(tgt?._id);
-      const res = await fetch(`${API_BASE}/api/campaigns/${id}/preview`, { method: 'POST', headers: hdrs, body: JSON.stringify({ recipient_id: tgt?._id }) });
+      const res = await apiFetch(`${API_BASE}/api/campaigns/${id}/preview`, { method: 'POST', headers: hdrs, body: JSON.stringify({ recipient_id: tgt?._id }) });
       const d = await res.json(); if (!res.ok) throw new Error(d.error || 'Preview failed');
+      if (d.warnings?.length) setNotice({ type: 'info', message: d.warnings[0] });
       setPreviewRecipientMeta(tgt); setPreviewHtml(d.html || ''); setPreviewOpen(true);
     } catch (e) { setNotice({ type: 'error', message: e.message }); } finally { setIsPreviewing(false); }
   }
 
   async function doSend() {
+    if (hasUnmatched(body) || hasUnmatched(subject)) { setNotice({ type: 'error', message: 'Invalid variable syntax detected.' }); return; }
+    const unknownVars = [...findVars(subject), ...findVars(body)].filter(k => !variableKeys.includes(k));
+    if (unknownVars.length) { setNotice({ type: 'error', message: `Unknown variable {{${unknownVars[0]}}} found.` }); return; }
     setIsSending(true); setNotice(null);
     try {
       const id = (await saveDraft()) || draftId; if (!id) throw new Error('Save draft first');
-      const res = await fetch(`${API_BASE}/api/campaigns/${id}/send`, { method: 'POST', headers: hdrs, body: JSON.stringify({ confirm_bulk_send: recipients.length > 5 }) });
+      const res = await apiFetch(`${API_BASE}/api/campaigns/${id}/send`, { method: 'POST', headers: hdrs, body: JSON.stringify({ confirm_bulk_send: recipients.length > 5 }) });
       const d = await res.json();
       if (!res.ok) {
         // If it's an auth error, refresh auth state so UI reflects reality
         if (res.status === 401 || d.authError) {
-          setIsAuthed(false);
-          setAuthEmail('');
+          setGmailConnected(false);
           setNotice({ type: 'error', message: 'Gmail authorization expired. Please reconnect your account, then try again.' });
           return;
         }
@@ -382,7 +534,7 @@ export default function App() {
 
   async function loadCampaign(id) {
     try {
-      const res = await fetch(`${API_BASE}/api/campaigns/${id}`); const d = await res.json(); if (!res.ok) throw new Error(d.error);
+      const res = await apiFetch(`${API_BASE}/api/campaigns/${id}`); const d = await res.json(); if (!res.ok) throw new Error(d.error);
       setSubject(d.subject || ''); setBody(d.body_html || ''); setSendMode(d.send_mode || 'individual'); setSenderName(d.sender_name || '');
       const recs = (d.recipients || []).map(r => ({ ...r, _id: r._id || uid() })); setRecipients(recs); setPreviewRecipientId(recs[0]?._id || null);
       setErrors({ recipients: {} }); setImportedGroupId(null); setImportedGroupEmails([]);
@@ -421,7 +573,7 @@ export default function App() {
       const url = isCreate ? `${API_BASE}/api/groups` : `${API_BASE}/api/groups/${groupDrawer.id}`;
       const method = isCreate ? 'POST' : 'PATCH';
       const payload = isCreate ? { title: groupTitle.trim(), recipients: groupRecipients.map(san) } : { title: groupTitle.trim(), recipients: groupRecipients.map(san) };
-      const res = await fetch(url, { method, headers: hdrs, body: JSON.stringify(payload) });
+      const res = await apiFetch(url, { method, headers: hdrs, body: JSON.stringify(payload) });
       const d = await res.json(); if (!res.ok) throw new Error(d.error || 'Failed');
       setNotice({ type: 'success', message: isCreate ? 'Group created' : 'Group saved' });
       setGroupDrawer(null); await loadGroups();
@@ -431,10 +583,10 @@ export default function App() {
   async function updateImportedGroup() {
     if (!importedGroupId) return;
     const base = new Set((importedGroupEmails || []).map(e => e.toLowerCase()));
-    const extras = recipients.map(san).filter(r => r.email && !base.has(r.email) && emailRegex.test(r.email) && r.name && r.company);
+    const extras = recipients.map(san).filter(r => r.email && !base.has(r.email) && emailRegex.test(r.email) && r.name);
     if (!extras.length) { setNotice({ type: 'info', message: 'No new recipients to add' }); return; }
     try {
-      const res = await fetch(`${API_BASE}/api/groups/${importedGroupId}/append`, { method: 'POST', headers: hdrs, body: JSON.stringify({ recipients: extras }) });
+      const res = await apiFetch(`${API_BASE}/api/groups/${importedGroupId}/append`, { method: 'POST', headers: hdrs, body: JSON.stringify({ recipients: extras }) });
       const d = await res.json(); if (!res.ok) throw new Error(d.error);
       setImportedGroupEmails(prev => [...prev, ...extras.map(r => r.email)]); setPendingGroupExtras(0);
       setNotice({ type: 'success', message: `Added ${d.added || extras.length} to group` });
@@ -463,10 +615,26 @@ export default function App() {
   async function saveTemplate() {
     if (!templateTitle.trim()) { setNotice({ type: 'error', message: 'Title required' }); return; }
     try {
-      const res = await fetch(`${API_BASE}/api/templates`, { method: 'POST', headers: hdrs, body: JSON.stringify({ title: templateTitle.trim(), subject, body_html: body }) });
+      const res = await apiFetch(`${API_BASE}/api/templates`, { method: 'POST', headers: hdrs, body: JSON.stringify({ title: templateTitle.trim(), subject, body_html: body }) });
       const d = await res.json(); if (!res.ok) throw new Error(d.error);
       setNotice({ type: 'success', message: 'Template saved' }); setTemplateDrawer(null); await loadTemplates();
     } catch (e) { setNotice({ type: 'error', message: e.message }); }
+  }
+
+  /* ── variables actions ── */
+
+  async function createVariable() {
+    if (!/^[a-z0-9]+$/.test(varForm.key || '')) { setNotice({ type: 'error', message: 'Key must be lowercase alphanumeric' }); return; }
+    if (!varForm.label.trim()) { setNotice({ type: 'error', message: 'Label required' }); return; }
+    try {
+      const res = await apiFetch(`${API_BASE}/api/variables`, { method: 'POST', headers: hdrs, body: JSON.stringify({ ...varForm, key: varForm.key.toLowerCase() }) });
+      const d = await res.json(); if (!res.ok) throw new Error(d.error);
+      setVariables(prev => [...prev, d]);
+      setVarForm({ key: '', label: '', required: false, description: '' });
+      setNotice({ type: 'success', message: 'Variable added' });
+    } catch (e) {
+      setNotice({ type: 'error', message: e.message });
+    }
   }
 
   /* ── group recipient helpers for drawer ── */
@@ -475,14 +643,15 @@ export default function App() {
     setGroupRecipients(prev => { const n = [...prev]; n[idx] = { ...n[idx], [field]: value, _id: n[idx]._id || uid() }; return n; });
   }
   function grDelete(idx) { setGroupRecipients(p => p.filter((_, i) => i !== idx)); }
+  function grVar(idx, key, value) { setGroupRecipients(prev => { const n = [...prev]; if (!n[idx]) return prev; n[idx] = { ...n[idx], variables: { ...(n[idx].variables || {}), [key]: value } }; return n; }); }
   function grBlur(idx) {
     setGroupRecipients(prev => {
       const n = [...prev], r = n[idx]; if (!r || !emailRegex.test(r.email || '')) return prev;
-      n[idx] = { ...r, name: r.name?.trim() ? r.name : nameFrom(r.email), company: r.company?.trim() ? r.company : compFrom(r.email) };
+      n[idx] = { ...r, name: r.name?.trim() ? r.name : nameFrom(r.email) };
       return n;
     });
   }
-  function grAdd() { setGroupRecipients(p => [...p, { _id: uid(), email: '', name: '', company: '' }]); }
+  function grAdd() { setGroupRecipients(p => [...p, { _id: uid(), email: '', name: '', variables: {} }]); }
 
   /* ── render ── */
 
@@ -495,164 +664,213 @@ export default function App() {
           <b className="hdr__name">Recruiter Mailer</b>
         </div>
         <div className="hdr__right">
-          {authChecking ? (
+          {authLoading ? (
             <span className="hdr__gmail"><i className="dot dot--warn" /> Checking…</span>
-          ) : isAuthed ? (
-            <span className="hdr__gmail-group">
-              <span className="hdr__gmail"><i className="dot dot--ok" /> {authEmail || 'Gmail Connected'}</span>
-              <button className="hdr__disconnect" onClick={disconnectGmail}>Disconnect</button>
-            </span>
+          ) : !appUser ? (
+            <button className="hdr__btn" onClick={login}>Login with Google</button>
           ) : (
-            <span className="hdr__gmail" onClick={() => window.location.href = `${API_BASE}/auth/google`}>
-              <i className="dot dot--err" /> Connect Gmail
+            <span className="hdr__gmail-group" style={{ gap: 8 }}>
+              <span className="hdr__gmail"><i className={`dot ${gmailConnected ? 'dot--ok' : 'dot--err'}`} /> {gmailConnected ? (gmailEmail || appUser.email || 'Gmail Connected') : 'Gmail not connected'}</span>
+              {gmailConnected ? (
+                <button className="hdr__disconnect" onClick={disconnectGmail}>Disconnect</button>
+              ) : (
+                <button className="hdr__btn" onClick={connectGmail}>Connect Gmail</button>
+              )}
+              <button className="hdr__btn" onClick={logout}>Logout</button>
             </span>
           )}
-          <button className="hdr__btn" onClick={() => setHistoryOpen(true)}><History size={15} /> History</button>
+          {appUser && <button className="hdr__btn" onClick={() => setHistoryOpen(true)}><History size={15} /> History</button>}
         </div>
       </header>
 
       {/* ── MAIN ── */}
-      <main className="main">
-        {/* LEFT */}
-        <section className="side">
-          <div className="side__scroll">
+      {appUser ? (
+        <main className="main">
+          {/* LEFT */}
+          <section className="side">
+            <div className="side__scroll">
 
-            {/* Sender */}
-            <div className="card">
-              <div className="card__head">
-                <span className="card__title"><Mail size={16} /> Sender</span>
-              </div>
-              <input className="inp" value={senderName} onChange={e => setSenderName(e.target.value)} placeholder="Display name (optional)" />
-              {errors.sender && <small className="err">{errors.sender}</small>}
-            </div>
-
-            {/* Recipients */}
-            <div className="card">
-              <div className="card__head">
-                <span className="card__title"><Users size={16} /> Recipients</span>
-                <button className="link" onClick={() => setBulkMode(!bulkMode)}>{bulkMode ? 'Manual entry' : 'Paste bulk'}</button>
-              </div>
-
-              {bulkMode ? (
-                <textarea className="inp inp--area" rows={5} placeholder="Paste emails (comma / newline separated)" value={bulkInput} onChange={e => setBulkInput(e.target.value)} onPaste={e => { e.preventDefault(); doBulkPaste(e.clipboardData?.getData('text') || ''); }} />
-              ) : (
-                <>
-                  <RecipientList recipients={recipients} onChange={updateRecipient} onDelete={deleteRecipient} onEmailBlur={onEmailBlur} fieldErrors={errors.recipients} />
-                  <button className="link" onClick={addRow}>+ Add recipient</button>
-                </>
-              )}
-              {errors.recipientsGeneral && <small className="err">{errors.recipientsGeneral}</small>}
-
-              {pendingGroupExtras > 0 && (
-                <div className="note">{pendingGroupExtras} new — <button className="link" onClick={updateImportedGroup}>sync to group</button></div>
-              )}
-            </div>
-
-            {/* Groups */}
-            <div className="card">
-              <div className="card__head">
-                <span className="card__title"><FolderOpen size={16} /> Groups</span>
-                <button className="link" onClick={() => openGroupDrawer('create')}>+ New group</button>
-              </div>
-              {groups.length ? (
-                <div className="group-chips">
-                  {groups.map(g => (
-                    <div className="group-chip" key={g.id} onClick={() => openGroupDrawer(g)}>
-                      <div className="group-chip__info">
-                        <span className="group-chip__name">{g.title}</span>
-                        <span className="group-chip__count">{g.recipients?.length || 0}</span>
-                      </div>
-                      <button className="group-chip__import" onClick={e => { e.stopPropagation(); importGroup(g); }}>Import</button>
-                    </div>
-                  ))}
+              {/* Sender */}
+              <div className="card">
+                <div className="card__head">
+                  <span className="card__title"><Mail size={16} /> Sender</span>
                 </div>
-              ) : <p className="muted">No groups saved yet.</p>}
-            </div>
-
-            {/* Delivery */}
-            <div className="card">
-              <div className="card__head">
-                <span className="card__title"><Send size={16} /> Delivery</span>
+                <input className="inp" value={senderName} onChange={e => setSenderName(e.target.value)} placeholder="Display name (optional)" />
+                {errors.sender && <small className="err">{errors.sender}</small>}
               </div>
 
-              <div className="delivery-row">
-                <div className="delivery-col">
-                  <span className="lbl--upper">Timing</span>
-                  <div className="toggle-row">
-                    <button className={`tog ${deliveryMode === 'now' ? 'tog--on' : ''}`} onClick={() => { setDeliveryMode('now'); setErrors(p => ({ ...p, scheduledAt: undefined })); }}>Send now</button>
-                    <button className={`tog ${deliveryMode === 'schedule' ? 'tog--on' : ''}`} onClick={() => setDeliveryMode('schedule')}>Schedule</button>
-                  </div>
-                  {deliveryMode === 'schedule' && <input className="inp" type="datetime-local" value={scheduledAt} onChange={e => { setScheduledAt(e.target.value); if (errors.scheduledAt) { const d = new Date(e.target.value); if (e.target.value && !Number.isNaN(d.getTime()) && d.getTime() > Date.now()) setErrors(p => ({ ...p, scheduledAt: undefined })); } }} style={{ marginTop: 4 }} />}
-                  {errors.scheduledAt && <small className="err">{errors.scheduledAt}</small>}
+              {/* Recipients */}
+              <div className="card">
+                <div className="card__head">
+                  <span className="card__title"><Users size={16} /> Recipients</span>
+                  <button className="link" onClick={() => setBulkMode(!bulkMode)}>{bulkMode ? 'Manual entry' : 'Paste bulk'}</button>
                 </div>
 
-                <div className="delivery-col">
-                  <span className="lbl--upper">Send type</span>
-                  <div className="toggle-row">
-                    <button className={`tog ${sendMode === 'individual' ? 'tog--on' : ''}`} onClick={() => setSendMode('individual')}>Individual</button>
-                    <button className={`tog ${sendMode === 'single' ? 'tog--on' : ''}`} onClick={() => setSendMode('single')}>Single</button>
-                  </div>
-                </div>
-              </div>
-              <p className="hint">Individual mode personalizes each email with {'{{name}}'} and {'{{company}}'}</p>
-            </div>
+                {bulkMode ? (
+                  <textarea className="inp inp--area" rows={5} placeholder="Paste emails (comma / newline separated)" value={bulkInput} onChange={e => setBulkInput(e.target.value)} onPaste={e => { e.preventDefault(); doBulkPaste(e.clipboardData?.getData('text') || ''); }} />
+                ) : (
+                  <>
+                    <RecipientList recipients={recipients} variables={variables} onChangeField={updateRecipient} onChangeVariable={updateRecipientVariable} onDelete={deleteRecipient} onEmailBlur={onEmailBlur} fieldErrors={errors.recipients} />
+                    <button className="link" onClick={addRow}>+ Add recipient</button>
+                  </>
+                )}
+                {errors.recipientsGeneral && <small className="err">{errors.recipientsGeneral}</small>}
 
-          </div>
-        </section>
-
-        {/* RIGHT */}
-        <section className="compose">
-          <div className="compose__inner">
-            <div className="compose__scroll">
-              <input className="compose__subject" value={subject} onChange={e => { setSubject(e.target.value); if (errors.subject) setErrors(p => ({ ...p, subject: undefined })); }} placeholder="Subject line" />
-              {errors.subject && <span className="err--blue">{errors.subject}</span>}
-
-              <div className="compose__editor">
-                <p className="editor-hint">Type <b>/</b> in the editor to insert variables like {'{{name}}'} or {'{{company}}'}</p>
-                <div className="quill-wrap">
-                  <ReactQuill ref={quillRef} theme="snow" value={body} onChange={v => { setBody(v); if (errors.body && strip(v)) setErrors(p => ({ ...p, body: undefined })); }} modules={QUILL_MODULES} placeholder="Write your email…" />
-                </div>
-                {slashMenu.open && (
-                  <div className="slash-menu" style={{ position: 'fixed', top: slashMenu.top, left: slashMenu.left, zIndex: 100 }}>
-                    {VARIABLE_OPTIONS.map((opt, idx) => (
-                      <button
-                        key={opt}
-                        className={idx === slashHighlight ? 'active' : ''}
-                        onMouseDown={e => { e.preventDefault(); insertVariable(opt); }}
-                      >
-                        {`{{${opt}}}`}
-                      </button>
-                    ))}
-                  </div>
+                {pendingGroupExtras > 0 && (
+                  <div className="note">{pendingGroupExtras} new — <button className="link" onClick={updateImportedGroup}>sync to group</button></div>
                 )}
               </div>
-              {errors.body && <span className="err--blue">{errors.body}</span>}
 
-              <div className="compose__actions">
-                <button className="btn btn--outline" onClick={() => saveDraft(true)} disabled={saving}>{saving ? 'Saving…' : 'Save Draft'}</button>
-                <button className="btn btn--white" onClick={doPreview} disabled={isPreviewing}>{isPreviewing ? 'Loading…' : 'Preview & Send'}</button>
+              {/* Variables */}
+              <div className="card">
+                <div className="card__head">
+                  <span className="card__title"><Clock size={16} /> Variables</span>
+                </div>
+                {variables.length ? (
+                  <div className="group-chips" style={{ gap: 8 }}>
+                    {variables.map(v => (
+                      <div className="group-chip" key={v.id} style={{ maxWidth: '100%' }}>
+                        <div className="group-chip__info">
+                          <span className="group-chip__name">{`{{${v.key}}}`}</span>
+                          <span className="group-chip__count">{v.label}{v.required ? ' • required' : ''}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : <p className="muted">No custom variables yet.</p>}
+                <div className="field">
+                  <input className="inp" placeholder="Key (e.g. position)" value={varForm.key} onChange={e => setVarForm(f => ({ ...f, key: e.target.value.toLowerCase() }))} />
+                </div>
+                <div className="field">
+                  <input className="inp" placeholder="Label" value={varForm.label} onChange={e => setVarForm(f => ({ ...f, label: e.target.value }))} />
+                </div>
+                <div className="field">
+                  <input className="inp" placeholder="Description (optional)" value={varForm.description} onChange={e => setVarForm(f => ({ ...f, description: e.target.value }))} />
+                </div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#555' }}>
+                  <input type="checkbox" checked={varForm.required} onChange={e => setVarForm(f => ({ ...f, required: e.target.checked }))} /> Required for recipients
+                </label>
+                <button className="btn btn--ghost" onClick={createVariable} style={{ alignSelf: 'flex-start' }}>Add variable</button>
               </div>
 
-              {/* Templates */}
-              <div className="tpl-area">
-                <div className="blk__head">
-                  <label className="lbl lbl--white">Templates</label>
-                  <button className="link link--white" onClick={openCreateTemplate}>+ Save current</button>
+              {/* Groups */}
+              <div className="card">
+                <div className="card__head">
+                  <span className="card__title"><FolderOpen size={16} /> Groups</span>
+                  <button className="link" onClick={() => openGroupDrawer('create')}>+ New group</button>
                 </div>
-                {templates.length ? templates.map(t => (
-                  <div className="row--dark" key={t.id}>
-                    <div className="row__info" onClick={() => setTemplateDrawer(t)}>
-                      <span className="row__name--w">{t.title || t.subject}</span>
-                      <span className="row__sub--w">{strip(t.body_html || '').slice(0, 50)}</span>
-                    </div>
-                    <button className="chip-sm--w" onClick={() => importTemplate(t)}>Use</button>
+                {groups.length ? (
+                  <div className="group-chips">
+                    {groups.map(g => (
+                      <div className="group-chip" key={g.id} onClick={() => openGroupDrawer(g)}>
+                        <div className="group-chip__info">
+                          <span className="group-chip__name">{g.title}</span>
+                          <span className="group-chip__count">{g.recipients?.length || 0}</span>
+                        </div>
+                        <button className="group-chip__import" onClick={e => { e.stopPropagation(); importGroup(g); }}>Import</button>
+                      </div>
+                    ))}
                   </div>
-                )) : <small className="muted muted--w">No templates yet</small>}
+                ) : <p className="muted">No groups saved yet.</p>}
+              </div>
+
+              {/* Delivery */}
+              <div className="card">
+                <div className="card__head">
+                  <span className="card__title"><Send size={16} /> Delivery</span>
+                </div>
+
+                <div className="delivery-row">
+                  <div className="delivery-col">
+                    <span className="lbl--upper">Timing</span>
+                    <div className="toggle-row">
+                      <button className={`tog ${deliveryMode === 'now' ? 'tog--on' : ''}`} onClick={() => { setDeliveryMode('now'); setErrors(p => ({ ...p, scheduledAt: undefined })); }}>Send now</button>
+                      <button className={`tog ${deliveryMode === 'schedule' ? 'tog--on' : ''}`} onClick={() => setDeliveryMode('schedule')}>Schedule</button>
+                    </div>
+                    {deliveryMode === 'schedule' && <input className="inp" type="datetime-local" value={scheduledAt} onChange={e => { setScheduledAt(e.target.value); if (errors.scheduledAt) { const d = new Date(e.target.value); if (e.target.value && !Number.isNaN(d.getTime()) && d.getTime() > Date.now()) setErrors(p => ({ ...p, scheduledAt: undefined })); } }} style={{ marginTop: 4 }} />}
+                    {errors.scheduledAt && <small className="err">{errors.scheduledAt}</small>}
+                  </div>
+
+                  <div className="delivery-col">
+                    <span className="lbl--upper">Send type</span>
+                    <div className="toggle-row">
+                      <button className={`tog ${sendMode === 'individual' ? 'tog--on' : ''}`} onClick={() => setSendMode('individual')}>Individual</button>
+                      <button className={`tog ${sendMode === 'single' ? 'tog--on' : ''}`} onClick={() => setSendMode('single')}>Single</button>
+                    </div>
+                  </div>
+                </div>
+                <p className="hint">Individual mode personalizes each email with {'{{name}}'}</p>
+              </div>
+
+            </div>
+          </section>
+
+          {/* RIGHT */}
+          <section className="compose">
+            <div className="compose__inner">
+              <div className="compose__scroll">
+                <input className="compose__subject" value={subject} onChange={e => { setSubject(e.target.value); if (errors.subject) setErrors(p => ({ ...p, subject: undefined })); }} placeholder="Subject line" />
+                {errors.subject && <span className="err--blue">{errors.subject}</span>}
+
+                <div className="compose__editor">
+                  <p className="editor-hint">Type <b>/</b> in the editor to insert variables like {'{{name}}'} or your saved keys</p>
+                  <div className="quill-wrap">
+                    <ReactQuill ref={quillRef} theme="snow" value={body} onChange={v => { setBody(v); if (errors.body && strip(v)) setErrors(p => ({ ...p, body: undefined })); }} modules={QUILL_MODULES} placeholder="Write your email…" />
+                  </div>
+                  {slashMenu.open && (
+                    <div className="slash-menu" style={{ position: 'fixed', top: slashMenu.top, left: slashMenu.left, zIndex: 100 }}>
+                      {variableKeys.map((opt, idx) => (
+                        <button
+                          key={opt}
+                          className={idx === slashHighlight ? 'active' : ''}
+                          onMouseDown={e => { e.preventDefault(); insertVariable(opt); }}
+                        >
+                          {`{{${opt}}}`}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {errors.body && <span className="err--blue">{errors.body}</span>}
+
+                <div className="compose__actions">
+                  <button className="btn btn--outline" onClick={() => saveDraft(true)} disabled={saving}>{saving ? 'Saving…' : 'Save Draft'}</button>
+                  <button className="btn btn--white" onClick={doPreview} disabled={isPreviewing || !gmailConnected}>{isPreviewing ? 'Loading…' : 'Preview & Send'}</button>
+                </div>
+
+                {/* Templates */}
+                <div className="tpl-area">
+                  <div className="blk__head">
+                    <label className="lbl lbl--white">Templates</label>
+                    <button className="link link--white" onClick={openCreateTemplate}>+ Save current</button>
+                  </div>
+                  {templates.length ? templates.map(t => (
+                    <div className="row--dark" key={t.id}>
+                      <div className="row__info" onClick={() => setTemplateDrawer(t)}>
+                        <span className="row__name--w">{t.title || t.subject}</span>
+                        <span className="row__sub--w">{strip(t.body_html || '').slice(0, 50)}</span>
+                      </div>
+                      <button className="chip-sm--w" onClick={() => importTemplate(t)}>Use</button>
+                    </div>
+                  )) : <small className="muted muted--w">No templates yet</small>}
+                </div>
               </div>
             </div>
-          </div>
-        </section>
-      </main>
+          </section>
+        </main>
+      ) : (
+        <main className="main">
+          <section className="compose" style={{ width: '100%', alignItems: 'center', justifyContent: 'center' }}>
+            <div className="compose__inner" style={{ maxWidth: 560 }}>
+              <div className="compose__scroll">
+                <h2>Welcome to Recruiter Mailer</h2>
+                <p className="muted" style={{ marginBottom: 16 }}>Login to manage recipients, templates, and connect Gmail.</p>
+                <button className="btn btn--primary" onClick={login}>Login with Google</button>
+              </div>
+            </div>
+          </section>
+        </main>
+      )}
 
       {/* ── FOOTER ── */}
       <footer className="ftr">
@@ -667,9 +885,9 @@ export default function App() {
       <Drawer open={previewOpen} title="Preview & Send" onClose={() => setPreviewOpen(false)} width={560}>
         {previewRecipientMeta && (
           <div className="pv-meta">
-            <div><b>{previewRecipientMeta.name}</b> <span className="muted">({previewRecipientMeta.company})</span></div>
+            <div><b>{previewRecipientMeta.name}</b> <span className="muted">({previewRecipientMeta.email})</span></div>
             <div className="pv-meta__acts">
-              <button className="link" onClick={() => { const r = recipients[Math.floor(Math.random() * recipients.length)]; if (r) { setIsPreviewing(true); fetch(`${API_BASE}/api/campaigns/${draftId}/preview`, { method: 'POST', headers: hdrs, body: JSON.stringify({ recipient_id: r._id }) }).then(x => x.json()).then(d => { setPreviewRecipientMeta(r); setPreviewHtml(d.html || ''); }).catch(e => setNotice({ type: 'error', message: e.message })).finally(() => setIsPreviewing(false)); } }}>Shuffle</button>
+              <button className="link" onClick={() => { const r = recipients[Math.floor(Math.random() * recipients.length)]; if (r) { setIsPreviewing(true); apiFetch(`${API_BASE}/api/campaigns/${draftId}/preview`, { method: 'POST', headers: hdrs, body: JSON.stringify({ recipient_id: r._id }) }).then(x => x.json()).then(d => { if (d.warnings?.length) setNotice({ type: 'info', message: d.warnings[0] }); setPreviewRecipientMeta(r); setPreviewHtml(d.html || ''); }).catch(e => setNotice({ type: 'error', message: e.message })).finally(() => setIsPreviewing(false)); } }}>Shuffle</button>
               <span className="muted" style={{ fontSize: 12 }}>(Random preview)</span>
             </div>
           </div>
@@ -695,7 +913,7 @@ export default function App() {
       <Drawer open={!!groupDrawer} title={groupDrawer === 'create' ? 'Create Group' : `Edit: ${groupDrawer?.title || ''}`} onClose={() => setGroupDrawer(null)} from="left" width={480}>
         <input className="inp" placeholder="Group name" value={groupTitle} onChange={e => setGroupTitle(e.target.value)} style={{ marginBottom: 12 }} />
         {groupErrors.title && <small className="err">{groupErrors.title}</small>}
-        <RecipientList recipients={groupRecipients} onChange={grUpdate} onDelete={grDelete} onEmailBlur={grBlur} fieldErrors={groupErrors.recipients} />
+        <RecipientList recipients={groupRecipients} variables={variables} onChangeField={grUpdate} onChangeVariable={grVar} onDelete={grDelete} onEmailBlur={grBlur} fieldErrors={groupErrors.recipients} />
         <button className="link" onClick={grAdd} style={{ marginTop: 4 }}>+ Add row</button>
         {groupErrors.general && <small className="err">{groupErrors.general}</small>}
         <div style={{ marginTop: 16, textAlign: 'right' }}>
