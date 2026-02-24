@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ReactQuill, { Quill } from 'react-quill';
 import RecipientList from './components/RecipientList.jsx';
-import { Mail, Users, FolderOpen, Send, Clock, History, Heart } from 'lucide-react';
+import { Mail, Users, Send, Clock, Heart, ChevronDown, LayoutGrid } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
 
@@ -101,17 +101,21 @@ export default function App() {
   const [idToken, setIdToken] = useState('');
   const [authLoading, setAuthLoading] = useState(true);
   const [gmailConnected, setGmailConnected] = useState(false);
-  const [gmailEmail, setGmailEmail] = useState('');
   const [senderName, setSenderName] = useState('');
   const [bulkMode, setBulkMode] = useState(false);
   const [bulkInput, setBulkInput] = useState('');
   const [errors, setErrors] = useState({ recipients: {} });
   const [history, setHistory] = useState([]);
-  const [historyOpen, setHistoryOpen] = useState(false);
+  const [utilityDrawerOpen, setUtilityDrawerOpen] = useState(false);
+  const [utilityTab, setUtilityTab] = useState('history');
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [draftId, setDraftId] = useState(null);
+  const [savedSenderName, setSavedSenderName] = useState('');
+  const [savingSenderName, setSavingSenderName] = useState(false);
 
   const quillRef = useRef(null);
+  const userMenuRef = useRef(null);
   const [slashMenu, setSlashMenu] = useState({ open: false, top: 0, left: 0 });
   const [slashHighlight, setSlashHighlight] = useState(0);
   const [slashTriggerIdx, setSlashTriggerIdx] = useState(null);
@@ -143,6 +147,7 @@ export default function App() {
         const token = await user.getIdToken();
         setIdToken(token);
         setAppUser({ email: user.email, displayName: user.displayName, firebaseUid: user.uid });
+        setUserMenuOpen(false);
         await hydrateProfile(token);
         loadVariables(token);
         loadHistory(token);
@@ -152,7 +157,10 @@ export default function App() {
         setAppUser(null);
         setIdToken('');
         setGmailConnected(false);
-        setGmailEmail('');
+        setSenderName('');
+        setSavedSenderName('');
+        setUtilityDrawerOpen(false);
+        setUserMenuOpen(false);
         setRecipients([]);
       }
     });
@@ -173,6 +181,15 @@ export default function App() {
     }
   }, []);
   useEffect(() => { if (!notice) return; const t = setTimeout(() => setNotice(null), 3500); return () => clearTimeout(t); }, [notice]);
+
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    const onDocClick = e => {
+      if (!userMenuRef.current?.contains(e.target)) setUserMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [userMenuOpen]);
 
   useEffect(() => {
     if (!recipients.length) { setPreviewRecipientId(null); return; }
@@ -272,8 +289,13 @@ export default function App() {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || 'Failed to load profile');
       setGmailConnected(!!d.gmailConnected);
-      setGmailEmail(d.gmailEmail || d.user?.email || '');
-      setAppUser(prev => prev || { email: d.user?.email, displayName: d.user?.displayName, firebaseUid: d.user?.firebaseUid });
+      setSenderName(d.user?.senderDisplayName || '');
+      setSavedSenderName(d.user?.senderDisplayName || '');
+      setAppUser(prev => ({
+        email: d.user?.email || prev?.email || '',
+        displayName: d.user?.displayName || prev?.displayName || '',
+        firebaseUid: d.user?.firebaseUid || prev?.firebaseUid || '',
+      }));
     } catch (err) {
       setGmailConnected(false);
       setNotice({ type: 'error', message: err.message });
@@ -286,7 +308,6 @@ export default function App() {
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || 'Failed to disconnect');
       setGmailConnected(false);
-      setGmailEmail('');
       setNotice({ type: 'info', message: 'Gmail disconnected' });
     } catch (e) {
       setNotice({ type: 'error', message: e.message || 'Failed to disconnect' });
@@ -312,12 +333,36 @@ export default function App() {
     }
   }
 
+  async function saveSenderPreference() {
+    if (!idToken) return;
+    const nextName = (senderName || '').trim();
+    if (nextName === savedSenderName) return;
+    setSavingSenderName(true);
+    try {
+      const res = await authedFetch(`${API_BASE}/auth/me/preferences`, {
+        method: 'PATCH',
+        headers: hdrs,
+        body: JSON.stringify({ senderDisplayName: nextName }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || 'Failed to save sender name');
+      setSavedSenderName(d.senderDisplayName || nextName);
+      setSenderName(d.senderDisplayName || nextName);
+      setNotice({ type: 'success', message: 'Sender name saved' });
+    } catch (e) {
+      setNotice({ type: 'error', message: e.message || 'Failed to save sender name' });
+    } finally {
+      setSavingSenderName(false);
+    }
+  }
+
   async function logout() {
     await signOut(firebaseAuth);
     setAppUser(null);
     setIdToken('');
     setGmailConnected(false);
-    setGmailEmail('');
+    setSenderName('');
+    setSavedSenderName('');
     setRecipients([]);
     setHistory([]);
   }
@@ -539,7 +584,7 @@ export default function App() {
       const recs = (d.recipients || []).map(r => ({ ...r, _id: r._id || uid() })); setRecipients(recs); setPreviewRecipientId(recs[0]?._id || null);
       setErrors({ recipients: {} }); setImportedGroupId(null); setImportedGroupEmails([]);
       if (d.scheduled_at) { setDeliveryMode('schedule'); setScheduledAt(d.scheduled_at.slice(0, 16)); } else { setDeliveryMode('now'); setScheduledAt(''); }
-      setDraftId(d.id); setNotice({ type: 'info', message: 'Draft loaded' }); setHistoryOpen(false);
+      setDraftId(d.id); setNotice({ type: 'info', message: 'Draft loaded' }); setUtilityDrawerOpen(false);
     } catch (e) { setNotice({ type: 'error', message: e.message }); }
   }
 
@@ -753,16 +798,56 @@ export default function App() {
           <b className="hdr__name">Recruiter Mailer</b>
         </div>
         <div className="hdr__right">
-          <span className="hdr__gmail-group" style={{ gap: 8 }}>
-            <span className="hdr__gmail"><i className={`dot ${gmailConnected ? 'dot--ok' : 'dot--err'}`} /> {gmailConnected ? (gmailEmail || appUser.email || 'Gmail Connected') : 'Gmail not connected'}</span>
-            {gmailConnected ? (
-              <button className="hdr__disconnect" onClick={disconnectGmail}>Disconnect</button>
-            ) : (
-              <button className="hdr__btn" onClick={connectGmail}>Connect Gmail</button>
+          <button
+            className="hdr__utility-btn"
+            onClick={() => {
+              setUtilityDrawerOpen(true);
+              setUtilityTab('history');
+            }}
+            aria-label="Open utility drawer"
+          >
+            <LayoutGrid size={16} />
+          </button>
+
+          <div className="hdr__user-menu" ref={userMenuRef}>
+            <button className="hdr__user-trigger" onClick={() => setUserMenuOpen(v => !v)}>
+              <span className="hdr__avatar">{(appUser?.displayName || appUser?.email || 'U').charAt(0).toUpperCase()}</span>
+              <span className="hdr__username">{appUser?.displayName || appUser?.email?.split('@')[0] || 'User'}</span>
+              <ChevronDown size={14} className={`hdr__chev ${userMenuOpen ? 'hdr__chev--open' : ''}`} />
+            </button>
+
+            {userMenuOpen && (
+              <div className="hdr__dropdown" role="menu">
+                <div className="hdr__dropdown-item hdr__dropdown-item--status">
+                  Gmail Status
+                  <span className={`hdr__status ${gmailConnected ? 'hdr__status--ok' : 'hdr__status--err'}`}>
+                    {gmailConnected ? 'Connected' : 'Not Connected'}
+                  </span>
+                </div>
+                {gmailConnected ? (
+                  <button className="hdr__dropdown-item" onClick={() => { disconnectGmail(); setUserMenuOpen(false); }}>
+                    Disconnect Gmail
+                  </button>
+                ) : (
+                  <button className="hdr__dropdown-item" onClick={() => { connectGmail(); setUserMenuOpen(false); }}>
+                    Connect Gmail
+                  </button>
+                )}
+                <button
+                  className="hdr__dropdown-item"
+                  onClick={() => {
+                    setUtilityDrawerOpen(true);
+                    setUtilityTab('settings');
+                    setUserMenuOpen(false);
+                  }}
+                >
+                  Settings
+                </button>
+                <div className="hdr__dropdown-divider" />
+                <button className="hdr__dropdown-item hdr__dropdown-item--danger" onClick={logout}>Logout</button>
+              </div>
             )}
-            <button className="hdr__btn" onClick={logout}>Logout</button>
-          </span>
-          {appUser && <button className="hdr__btn" onClick={() => setHistoryOpen(true)}><History size={15} /> History</button>}
+          </div>
         </div>
       </header>
 
@@ -776,6 +861,9 @@ export default function App() {
               <div className="card">
                 <div className="card__head">
                   <span className="card__title"><Mail size={16} /> Sender</span>
+                  <button className="link" onClick={saveSenderPreference} disabled={savingSenderName || senderName.trim() === savedSenderName}>
+                    {savingSenderName ? 'Saving…' : 'Save'}
+                  </button>
                 </div>
                 <input className="inp" value={senderName} onChange={e => setSenderName(e.target.value)} placeholder="Display name (optional)" />
                 {errors.sender && <small className="err">{errors.sender}</small>}
@@ -833,27 +921,6 @@ export default function App() {
                   <input type="checkbox" checked={varForm.required} onChange={e => setVarForm(f => ({ ...f, required: e.target.checked }))} /> Required for recipients
                 </label>
                 <button className="btn btn--ghost" onClick={createVariable} style={{ alignSelf: 'flex-start' }}>Add variable</button>
-              </div>
-
-              {/* Groups */}
-              <div className="card">
-                <div className="card__head">
-                  <span className="card__title"><FolderOpen size={16} /> Groups</span>
-                  <button className="link" onClick={() => openGroupDrawer('create')}>+ New group</button>
-                </div>
-                {groups.length ? (
-                  <div className="group-chips">
-                    {groups.map(g => (
-                      <div className="group-chip" key={g.id} onClick={() => openGroupDrawer(g)}>
-                        <div className="group-chip__info">
-                          <span className="group-chip__name">{g.title}</span>
-                          <span className="group-chip__count">{g.recipients?.length || 0}</span>
-                        </div>
-                        <button className="group-chip__import" onClick={e => { e.stopPropagation(); importGroup(g); }}>Import</button>
-                      </div>
-                    ))}
-                  </div>
-                ) : <p className="muted">No groups saved yet.</p>}
               </div>
 
               {/* Delivery */}
@@ -919,23 +986,6 @@ export default function App() {
                   <button className="btn btn--outline" onClick={() => saveDraft(true)} disabled={saving}>{saving ? 'Saving…' : 'Save Draft'}</button>
                   <button className="btn btn--white" onClick={doPreview} disabled={isPreviewing || !gmailConnected}>{isPreviewing ? 'Loading…' : 'Preview & Send'}</button>
                 </div>
-
-                {/* Templates */}
-                <div className="tpl-area">
-                  <div className="blk__head">
-                    <label className="lbl lbl--white">Templates</label>
-                    <button className="link link--white" onClick={openCreateTemplate}>+ Save current</button>
-                  </div>
-                  {templates.length ? templates.map(t => (
-                    <div className="row--dark" key={t.id}>
-                      <div className="row__info" onClick={() => setTemplateDrawer(t)}>
-                        <span className="row__name--w">{t.title || t.subject}</span>
-                        <span className="row__sub--w">{strip(t.body_html || '').slice(0, 50)}</span>
-                      </div>
-                      <button className="chip-sm--w" onClick={() => importTemplate(t)}>Use</button>
-                    </div>
-                  )) : <small className="muted muted--w">No templates yet</small>}
-                </div>
               </div>
             </div>
           </section>
@@ -968,14 +1018,88 @@ export default function App() {
         </div>
       </Drawer>
 
-      {/* History */}
-      <Drawer open={historyOpen} title="Campaign History" onClose={() => setHistoryOpen(false)} width={500}>
-        {history.length ? history.map(h => (
-          <button className="hist-row" key={h.id} onClick={() => loadCampaign(h.id)}>
-            <div><b>{h.subject}</b><br /><small className="muted">{new Date(h.created_at).toLocaleString()}</small></div>
-            <div className="hist-row__right"><span className={`pill pill--${h.status}`}>{h.status}</span><small className="muted">{h.recipient_count} recipients</small></div>
-          </button>
-        )) : <p className="muted">No campaigns yet.</p>}
+      {/* Utility drawer */}
+      <Drawer open={utilityDrawerOpen} title="Utilities" onClose={() => setUtilityDrawerOpen(false)} width={520}>
+        <div className="utility-tabs">
+          <button className={`utility-tab ${utilityTab === 'history' ? 'utility-tab--active' : ''}`} onClick={() => setUtilityTab('history')}>History</button>
+          <button className={`utility-tab ${utilityTab === 'templates' ? 'utility-tab--active' : ''}`} onClick={() => setUtilityTab('templates')}>Templates</button>
+          <button className={`utility-tab ${utilityTab === 'groups' ? 'utility-tab--active' : ''}`} onClick={() => setUtilityTab('groups')}>Groups</button>
+          <button className={`utility-tab ${utilityTab === 'settings' ? 'utility-tab--active' : ''}`} onClick={() => setUtilityTab('settings')}>Settings</button>
+        </div>
+
+        {utilityTab === 'history' && (
+          <div className="utility-panel">
+            {history.length ? history.map(h => (
+              <button className="hist-row" key={h.id} onClick={() => loadCampaign(h.id)}>
+                <div><b>{h.subject}</b><br /><small className="muted">{new Date(h.created_at).toLocaleString()}</small></div>
+                <div className="hist-row__right"><span className={`pill pill--${h.status}`}>{h.status}</span><small className="muted">{h.recipient_count} recipients</small></div>
+              </button>
+            )) : <p className="muted">No campaigns yet.</p>}
+          </div>
+        )}
+
+        {utilityTab === 'templates' && (
+          <div className="utility-panel utility-panel--stack">
+            <div className="utility-panel__head">
+              <h4>Templates</h4>
+              <button className="link" onClick={openCreateTemplate}>+ Save current</button>
+            </div>
+            {templates.length ? templates.map(t => (
+              <div className="utility-row" key={t.id}>
+                <div className="row__info" onClick={() => setTemplateDrawer(t)}>
+                  <span className="utility-row__title">{t.title || t.subject}</span>
+                  <span className="utility-row__sub">{strip(t.body_html || '').slice(0, 68)}</span>
+                </div>
+                <button className="chip-sm" onClick={() => importTemplate(t)}>Use</button>
+              </div>
+            )) : <p className="muted">No templates yet.</p>}
+          </div>
+        )}
+
+        {utilityTab === 'groups' && (
+          <div className="utility-panel utility-panel--stack">
+            <div className="utility-panel__head">
+              <h4>Groups</h4>
+              <button className="link" onClick={() => openGroupDrawer('create')}>+ New group</button>
+            </div>
+            {groups.length ? (
+              <div className="group-chips">
+                {groups.map(g => (
+                  <div className="group-chip" key={g.id} onClick={() => openGroupDrawer(g)}>
+                    <div className="group-chip__info">
+                      <span className="group-chip__name">{g.title}</span>
+                      <span className="group-chip__count">{g.recipients?.length || 0}</span>
+                    </div>
+                    <button className="group-chip__import" onClick={e => { e.stopPropagation(); importGroup(g); setUtilityDrawerOpen(false); }}>Import</button>
+                  </div>
+                ))}
+              </div>
+            ) : <p className="muted">No groups saved yet.</p>}
+          </div>
+        )}
+
+        {utilityTab === 'settings' && (
+          <div className="utility-panel utility-panel--stack">
+            <div className="utility-settings-row">
+              <span className="muted">Gmail Status</span>
+              <span className={`hdr__status ${gmailConnected ? 'hdr__status--ok' : 'hdr__status--err'}`}>
+                {gmailConnected ? 'Connected' : 'Not Connected'}
+              </span>
+            </div>
+            {gmailConnected ? (
+              <button className="btn btn--ghost" onClick={disconnectGmail} style={{ alignSelf: 'flex-start' }}>Disconnect Gmail</button>
+            ) : (
+              <button className="btn btn--primary" onClick={connectGmail} style={{ alignSelf: 'flex-start' }}>Connect Gmail</button>
+            )}
+            <div className="field" style={{ marginTop: 8 }}>
+              <label className="lbl">Sender display name</label>
+              <input className="inp" value={senderName} onChange={e => setSenderName(e.target.value)} placeholder="Display name (optional)" />
+            </div>
+            <button className="btn btn--primary" onClick={saveSenderPreference} disabled={savingSenderName || senderName.trim() === savedSenderName} style={{ alignSelf: 'flex-start' }}>
+              {savingSenderName ? 'Saving…' : 'Save sender name'}
+            </button>
+          </div>
+        )}
       </Drawer>
 
       {/* Group drawer */}

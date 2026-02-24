@@ -96,10 +96,22 @@ app.get('/auth/me', requireAuth, async (req, res) => {
       firebaseUid: user.firebaseUid,
       email: user.email,
       displayName: user.displayName,
+      senderDisplayName: user.senderDisplayName || '',
     },
     gmailConnected: !!user.gmailConnected,
     gmailEmail: user.gmailEmail || user.email,
   });
+});
+
+app.patch('/auth/me/preferences', requireAuth, async (req, res) => {
+  try {
+    const senderDisplayName = String(req.body?.senderDisplayName || '').trim().slice(0, 120);
+    req.user.senderDisplayName = senderDisplayName;
+    await req.user.save();
+    res.json({ ok: true, senderDisplayName: req.user.senderDisplayName || '' });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Failed to save preferences' });
+  }
 });
 
 app.post('/gmail/connect', requireAuth, async (req, res) => {

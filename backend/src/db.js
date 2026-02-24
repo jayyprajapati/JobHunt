@@ -17,6 +17,7 @@ const userSchema = new mongoose.Schema(
     googleId: { type: String, unique: true, sparse: true },
     email: { type: String, required: true, lowercase: true, trim: true, index: true },
     displayName: { type: String, default: '' },
+    senderDisplayName: { type: String, default: '', trim: true },
     gmailEmail: { type: String, lowercase: true, trim: true },
     gmailConnected: { type: Boolean, default: false },
     encryptedRefreshToken: { type: String },
