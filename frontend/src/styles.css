@@ -49,6 +49,299 @@ body {
   background: #fff;
 }
 
+.landing-shell {
+  min-height: 100vh;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+}
+
+.hdr--landing {
+  min-height: 58px;
+  height: 58px;
+}
+
+.landing-main {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 84px 24px;
+  background: #fff;
+}
+
+.landing-wrap {
+  width: min(1160px, 100%);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 48px;
+  align-items: center;
+}
+
+.landing-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.landing-title {
+  font-size: clamp(32px, 4vw, 40px);
+  line-height: 1.15;
+  font-weight: 700;
+  color: var(--text);
+  max-width: 560px;
+}
+
+.landing-subtitle {
+  color: var(--sub);
+  font-size: 16px;
+  line-height: 1.6;
+  max-width: 540px;
+}
+
+.feature-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.feature-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text);
+  background: #fff;
+}
+
+.landing-cta {
+  align-self: flex-start;
+  margin-top: 6px;
+}
+
+.landing-demo {
+  display: flex;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+
+.demo-window {
+  width: min(620px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: #fff;
+  transform: translateX(72px);
+}
+
+.demo-window__head {
+  display: flex;
+  gap: 6px;
+}
+
+.demo-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.demo-dot--red {
+  background: #ff5f57;
+}
+
+.demo-dot--yellow {
+  background: #febc2e;
+}
+
+.demo-dot--green {
+  background: #28c840;
+}
+
+.demo-block {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.demo-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.demo-subject {
+  font-size: 14px;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  width: 100%;
+}
+
+.demo-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.demo-control {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  color: var(--sub);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: #fff;
+}
+
+.demo-vars {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.demo-var-key,
+.demo-var-val {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.demo-var-key {
+  color: var(--blue);
+  border: 1px solid #cfe3ff;
+  background: #f3f8ff;
+}
+
+.demo-var-val {
+  color: var(--sub);
+  border: 1px solid var(--border);
+}
+
+.demo-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.demo-btn {
+  border: none;
+  border-radius: 10px;
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--blue);
+  animation: demoClick 4.8s ease-in-out infinite;
+}
+
+.demo-status {
+  font-size: 12px;
+  color: var(--blue);
+  opacity: 0;
+  animation: demoStatus 4.8s ease-in-out infinite;
+}
+
+.demo-preview {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  opacity: 0;
+  transform: translateY(4px);
+  animation: demoPanel 4.8s ease-in-out infinite;
+}
+
+.demo-line {
+  height: 8px;
+  border-radius: 999px;
+  background: #e8eaef;
+  width: 76%;
+}
+
+.demo-line--lg {
+  width: 92%;
+}
+
+.demo-line--sm {
+  width: 56%;
+}
+
+@keyframes demoClick {
+  0%, 58%, 100% {
+    transform: scale(1);
+  }
+  63% {
+    transform: scale(0.96);
+  }
+  67% {
+    transform: scale(1);
+  }
+}
+
+@keyframes demoStatus {
+  0%, 60% {
+    opacity: 0;
+  }
+  68%, 90% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes demoPanel {
+  0%, 62% {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  72%, 94% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@media (max-width: 980px) {
+  .landing-main {
+    align-items: flex-start;
+    padding-top: 56px;
+  }
+
+  .landing-wrap {
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+
+  .landing-demo {
+    justify-content: flex-start;
+    overflow: visible;
+  }
+
+  .demo-window {
+    width: min(560px, 100%);
+    transform: none;
+  }
+}
+
 /* ── Header ── */
 
 .hdr {

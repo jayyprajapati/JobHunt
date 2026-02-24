@@ -655,6 +655,95 @@ export default function App() {
 
   /* ── render ── */
 
+  if (!authLoading && !appUser) {
+    return (
+      <div className="landing-shell">
+        <header className="hdr hdr--landing">
+          <div className="hdr__left">
+            <Mail size={20} className="hdr__logo" />
+            <b className="hdr__name">Recruiter Mailer</b>
+          </div>
+          <div className="hdr__right" />
+        </header>
+
+        <main className="landing-main">
+          <section className="landing-wrap">
+            <div className="landing-copy">
+              <h1 className="landing-title">Send personalized outreach faster, with control.</h1>
+              <p className="landing-subtitle">Securely connect Gmail, personalize each message with variables, and review before every send.</p>
+
+              <div className="feature-chips">
+                <span className="feature-chip">Secure Gmail sending</span>
+                <span className="feature-chip">Custom variables</span>
+                <span className="feature-chip">Save templates</span>
+                <span className="feature-chip">Controlled daily limits</span>
+                <span className="feature-chip">Preview before send</span>
+              </div>
+
+              <button className="btn btn--primary landing-cta" onClick={login}>Login with Google</button>
+            </div>
+
+            <div className="landing-demo" aria-hidden="true">
+              <div className="demo-window">
+                <div className="demo-window__head">
+                  <span className="demo-dot demo-dot--red" />
+                  <span className="demo-dot demo-dot--yellow" />
+                  <span className="demo-dot demo-dot--green" />
+                </div>
+
+                <div className="demo-block">
+                  <span className="demo-label">Subject</span>
+                  <div className="demo-subject">Application update for {'{{name}}'}</div>
+                </div>
+
+                <div className="demo-controls">
+                  <span className="demo-control">Groups • Eng Hiring</span>
+                  <span className="demo-control">Templates • Intro Follow-up</span>
+                  <span className="demo-control">History • 12 sent</span>
+                </div>
+
+                <div className="demo-block">
+                  <span className="demo-label">Variables</span>
+                  <div className="demo-vars">
+                    <span className="demo-var-key">{'{{name}}'}</span>
+                    <span className="demo-var-val">Ava Johnson</span>
+                  </div>
+                </div>
+
+                <div className="demo-actions">
+                  <button className="demo-btn">Preview</button>
+                  <span className="demo-status">Preview ready</span>
+                </div>
+
+                <div className="demo-preview">
+                  <span className="demo-line demo-line--lg" />
+                  <span className="demo-line" />
+                  <span className="demo-line demo-line--sm" />
+                </div>
+              </div>
+            </div>
+          </section>
+        </main>
+
+        <Toast notice={notice} onClose={() => setNotice(null)} />
+      </div>
+    );
+  }
+
+  if (authLoading) {
+    return (
+      <div className="landing-shell">
+        <header className="hdr hdr--landing">
+          <div className="hdr__left">
+            <Mail size={20} className="hdr__logo" />
+            <b className="hdr__name">Recruiter Mailer</b>
+          </div>
+          <div className="hdr__right" />
+        </header>
+      </div>
+    );
+  }
+
   return (
     <div className="shell">
       {/* ── HEADER ── */}
@@ -664,28 +753,21 @@ export default function App() {
           <b className="hdr__name">Recruiter Mailer</b>
         </div>
         <div className="hdr__right">
-          {authLoading ? (
-            <span className="hdr__gmail"><i className="dot dot--warn" /> Checking…</span>
-          ) : !appUser ? (
-            <button className="hdr__btn" onClick={login}>Login with Google</button>
-          ) : (
-            <span className="hdr__gmail-group" style={{ gap: 8 }}>
-              <span className="hdr__gmail"><i className={`dot ${gmailConnected ? 'dot--ok' : 'dot--err'}`} /> {gmailConnected ? (gmailEmail || appUser.email || 'Gmail Connected') : 'Gmail not connected'}</span>
-              {gmailConnected ? (
-                <button className="hdr__disconnect" onClick={disconnectGmail}>Disconnect</button>
-              ) : (
-                <button className="hdr__btn" onClick={connectGmail}>Connect Gmail</button>
-              )}
-              <button className="hdr__btn" onClick={logout}>Logout</button>
-            </span>
-          )}
+          <span className="hdr__gmail-group" style={{ gap: 8 }}>
+            <span className="hdr__gmail"><i className={`dot ${gmailConnected ? 'dot--ok' : 'dot--err'}`} /> {gmailConnected ? (gmailEmail || appUser.email || 'Gmail Connected') : 'Gmail not connected'}</span>
+            {gmailConnected ? (
+              <button className="hdr__disconnect" onClick={disconnectGmail}>Disconnect</button>
+            ) : (
+              <button className="hdr__btn" onClick={connectGmail}>Connect Gmail</button>
+            )}
+            <button className="hdr__btn" onClick={logout}>Logout</button>
+          </span>
           {appUser && <button className="hdr__btn" onClick={() => setHistoryOpen(true)}><History size={15} /> History</button>}
         </div>
       </header>
 
       {/* ── MAIN ── */}
-      {appUser ? (
-        <main className="main">
+      <main className="main">
           {/* LEFT */}
           <section className="side">
             <div className="side__scroll">
@@ -857,20 +939,7 @@ export default function App() {
               </div>
             </div>
           </section>
-        </main>
-      ) : (
-        <main className="main">
-          <section className="compose" style={{ width: '100%', alignItems: 'center', justifyContent: 'center' }}>
-            <div className="compose__inner" style={{ maxWidth: 560 }}>
-              <div className="compose__scroll">
-                <h2>Welcome to Recruiter Mailer</h2>
-                <p className="muted" style={{ marginBottom: 16 }}>Login to manage recipients, templates, and connect Gmail.</p>
-                <button className="btn btn--primary" onClick={login}>Login with Google</button>
-              </div>
-            </div>
-          </section>
-        </main>
-      )}
+      </main>
 
       {/* ── FOOTER ── */}
       <footer className="ftr">
