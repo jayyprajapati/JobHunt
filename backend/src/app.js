@@ -5,7 +5,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const admin = require('firebase-admin');
 const crypto = require('crypto');
-const { getAuthUrl, exchangeCodeForUser, verifyAuth } = require('./gmail');
+const { getAuthUrl, exchangeCodeForUser, verifyAuth, clearGmailAuthorization, getAuthorizedClient } = require('./gmail');
 const recipientRoutes = require('./routes/recipients');
 const { router: campaignRoutes } = require('./routes/campaigns');
 const groupRoutes = require('./routes/groups');
@@ -90,6 +90,11 @@ app.get('/health', (_req, res) => {
 
 app.get('/auth/me', requireAuth, async (req, res) => {
   const user = req.user;
+  const connected = !!user.encryptedRefreshToken;
+  if (user.gmailConnected !== connected) {
+    user.gmailConnected = connected;
+    await user.save();
+  }
   res.json({
     user: {
       id: user._id.toString(),
@@ -116,12 +121,29 @@ app.patch('/auth/me/preferences', requireAuth, async (req, res) => {
 
 app.post('/gmail/connect', requireAuth, async (req, res) => {
   try {
-    const needsConsent = !req.user.encryptedRefreshToken;
-    const state = crypto.randomBytes(16).toString('hex');
-    req.user.gmailState = state;
-    req.user.gmailStateExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
-    await req.user.save();
-    const url = getAuthUrl({ state, prompt: needsConsent ? 'consent' : 'none' });
+    const user = req.user;
+    if (user.encryptedRefreshToken) {
+      try {
+        await getAuthorizedClient(user, { verifyAccess: true });
+        user.gmailConnected = true;
+        user.gmailState = undefined;
+        user.gmailStateExpiresAt = undefined;
+        await user.save();
+        return res.json({ alreadyConnected: true, gmailConnected: true });
+      } catch (err) {
+        const msg = err?.message || '';
+        const isAuthExpired = err.code === 'AUTH_EXPIRED' || /invalid_grant|insufficient|expired|revoked/i.test(msg);
+        if (!isAuthExpired) throw err;
+        await clearGmailAuthorization(user, 'stale refresh on connect');
+      }
+    }
+
+    const state = crypto.randomBytes(24).toString('hex');
+    user.gmailState = state;
+    user.gmailStateExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    await user.save();
+    console.log('[oauth] Generated state');
+    const url = getAuthUrl({ state, forceConsent: true });
     res.json({ url });
   } catch (err) {
     res.status(500).json({ error: err.message || 'Failed to start Gmail connect' });
@@ -130,8 +152,7 @@ app.post('/gmail/connect', requireAuth, async (req, res) => {
 
 app.post('/gmail/disconnect', requireAuth, async (req, res) => {
   try {
-    req.user.encryptedRefreshToken = undefined;
-    req.user.gmailConnected = false;
+    await clearGmailAuthorization(req.user, 'user disconnect');
     req.user.gmailEmail = undefined;
     await req.user.save();
     res.json({ ok: true });
@@ -140,22 +161,59 @@ app.post('/gmail/disconnect', requireAuth, async (req, res) => {
   }
 });
 
+app.post('/gmail/reconnect', requireAuth, async (req, res) => {
+  try {
+    await clearGmailAuthorization(req.user, 'manual reconnect');
+    const state = crypto.randomBytes(24).toString('hex');
+    req.user.gmailState = state;
+    req.user.gmailStateExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    await req.user.save();
+    console.log('[oauth] Generated state');
+    const url = getAuthUrl({ state, forceConsent: true });
+    res.json({ url });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Failed to restart Gmail connect' });
+  }
+});
+
 app.get('/auth/google/callback', async (req, res) => {
   const { code, state } = req.query || {};
   const frontendOrigin = FRONTEND_ORIGIN;
-  if (!code || !state) return res.redirect(`${frontendOrigin}?auth=error&reason=missing_code`);
+  const redirectError = (reason, message) => {
+    const url = new URL(frontendOrigin);
+    url.searchParams.set('gmail', 'error');
+    url.searchParams.set('reason', reason);
+    if (message) url.searchParams.set('message', message);
+    return res.redirect(url.toString());
+  };
+
+  if (!code) return redirectError('missing_code', 'Missing authorization code');
+  if (!state) return redirectError('missing_state', 'Missing OAuth state');
   try {
-    const user = await User.findOne({ gmailState: state, gmailStateExpiresAt: { $gte: new Date() } });
-    if (!user) return res.redirect(`${frontendOrigin}?auth=error&reason=invalid_state`);
+    const user = await User.findOne({ gmailState: state });
+    if (!user) return redirectError('state_mismatch', 'OAuth state mismatch. Please restart Gmail connect.');
+    if (!user.gmailStateExpiresAt || user.gmailStateExpiresAt < new Date()) {
+      user.gmailState = undefined;
+      user.gmailStateExpiresAt = undefined;
+      await user.save();
+      console.warn('[oauth] State expired');
+      return redirectError('state_expired', 'OAuth state expired. Please try again.');
+    }
+    console.log('[oauth] State validated');
     await exchangeCodeForUser(user, code);
+    console.log('[oauth] Token exchange success');
     user.gmailState = undefined;
     user.gmailStateExpiresAt = undefined;
     user.gmailConnected = true;
     await user.save();
     return res.redirect(`${frontendOrigin}?gmail=success`);
   } catch (err) {
-    console.error('[auth] Callback error:', err.message);
-    return res.redirect(`${frontendOrigin}?gmail=error&reason=${encodeURIComponent(err.message)}`);
+    console.error('[oauth] Callback error:', err.message);
+    console.error('[oauth] Callback error FULL:', err);
+    if (err.response?.data) {
+      console.error('[oauth] Google error response:', JSON.stringify(err.response.data));
+    }
+    return redirectError('token_exchange_failed', err.message);
   }
 });
 

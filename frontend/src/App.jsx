@@ -175,8 +175,9 @@ export default function App() {
       hydrateProfile();
       window.history.replaceState({}, '', window.location.pathname);
     } else if (gmail === 'error') {
-      const reason = params.get('reason') || 'Authorization failed';
+      const reason = params.get('message') || params.get('reason') || 'Authorization failed';
       setNotice({ type: 'error', message: `Gmail auth failed: ${reason}` });
+      hydrateProfile();
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, []);
@@ -309,6 +310,7 @@ export default function App() {
       if (!res.ok) throw new Error(d.error || 'Failed to disconnect');
       setGmailConnected(false);
       setNotice({ type: 'info', message: 'Gmail disconnected' });
+      hydrateProfile();
     } catch (e) {
       setNotice({ type: 'error', message: e.message || 'Failed to disconnect' });
     }
@@ -318,10 +320,27 @@ export default function App() {
     try {
       const res = await authedFetch(`${API_BASE}/gmail/connect`, { method: 'POST' });
       const d = await res.json();
+      if (d.alreadyConnected) {
+        setGmailConnected(true);
+        setNotice({ type: 'success', message: 'Gmail already connected.' });
+        hydrateProfile();
+        return;
+      }
       if (!res.ok || !d.url) throw new Error(d.error || 'Failed to start Gmail connect');
       window.location.href = d.url;
     } catch (e) {
       setNotice({ type: 'error', message: e.message || 'Failed to start Gmail connect' });
+    }
+  }
+
+  async function reconnectGmail() {
+    try {
+      const res = await authedFetch(`${API_BASE}/gmail/reconnect`, { method: 'POST' });
+      const d = await res.json();
+      if (!res.ok || !d.url) throw new Error(d.error || 'Failed to restart Gmail connect');
+      window.location.href = d.url;
+    } catch (e) {
+      setNotice({ type: 'error', message: e.message || 'Failed to restart Gmail connect' });
     }
   }
 
@@ -568,6 +587,7 @@ export default function App() {
         if (res.status === 401 || d.authError) {
           setGmailConnected(false);
           setNotice({ type: 'error', message: 'Gmail authorization expired. Please reconnect your account, then try again.' });
+          await hydrateProfile();
           return;
         }
         throw new Error(d.error || 'Send failed');
@@ -833,6 +853,9 @@ export default function App() {
                     Connect Gmail
                   </button>
                 )}
+                <button className="hdr__dropdown-item" onClick={() => { reconnectGmail(); setUserMenuOpen(false); }}>
+                  Reconnect Gmail
+                </button>
                 <button
                   className="hdr__dropdown-item"
                   onClick={() => {
@@ -1091,6 +1114,9 @@ export default function App() {
             ) : (
               <button className="btn btn--primary" onClick={connectGmail} style={{ alignSelf: 'flex-start' }}>Connect Gmail</button>
             )}
+            <button className="btn btn--white" onClick={reconnectGmail} style={{ alignSelf: 'flex-start' }}>
+              Reconnect Gmail (fresh OAuth)
+            </button>
             <div className="field" style={{ marginTop: 8 }}>
               <label className="lbl">Sender display name</label>
               <input className="inp" value={senderName} onChange={e => setSenderName(e.target.value)} placeholder="Display name (optional)" />
